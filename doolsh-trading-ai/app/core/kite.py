@@ -144,10 +144,11 @@ async def auto_login() -> str:
     """Fully automated login via TOTP — no browser needed.
 
     Flow:
-        1. POST to Kite login with user_id + password → get request_id
-        2. POST TOTP to 2FA endpoint → get session cookies
-        3. GET Kite Connect login URL with session cookies → redirect with request_token
-        4. Exchange request_token for access_token
+        1. Load Kite login page to get CSRF cookies
+        2. POST to Kite login with user_id + password → get request_id
+        3. POST TOTP to 2FA endpoint → get session cookies
+        4. GET Kite Connect login URL with session cookies → redirect with request_token
+        5. Exchange request_token for access_token
 
     Returns the access_token string.
     """
@@ -157,18 +158,41 @@ async def auto_login() -> str:
         )
 
     kite = get_kite()
-    login_url = "https://kite.zerodha.com/api/login"
-    twofa_url = "https://kite.zerodha.com/api/twofa"
+    base_url = "https://kite.zerodha.com"
+    login_url = f"{base_url}/api/login"
+    twofa_url = f"{base_url}/api/twofa"
     connect_url = f"https://kite.trade/connect/login?v=3&api_key={settings.kite_api_key}"
 
     totp = pyotp.TOTP(settings.kite_totp_secret)
     request_token = ""
 
+    # Browser-like headers to avoid 403
+    browser_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Mobile Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Origin": base_url,
+        "Referer": f"{base_url}/connect/login",
+        "X-Kite-Version": "3",
+    }
+
     async with httpx.AsyncClient(
         follow_redirects=False,
         timeout=30,
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers=browser_headers,
     ) as client:
+        # Step 0: Load the login page to pick up CSRF cookies and session
+        logger.info("Kite auto-login step 0: loading login page...")
+        try:
+            page_resp = await client.get(f"{base_url}/connect/login?v=3&api_key={settings.kite_api_key}")
+        except Exception:
+            page_resp = await client.get(base_url)
+
         # Step 1: Login with user_id + password
         logger.info("Kite auto-login step 1: credentials...")
         resp1 = await client.post(
@@ -186,7 +210,7 @@ async def auto_login() -> str:
 
         logger.info("Kite auto-login step 1 OK (request_id=%s)", request_id[:8])
 
-        # Step 2: Submit TOTP
+        # Step 2: Submit TOTP — include cookies from step 0 + step 1
         logger.info("Kite auto-login step 2: TOTP...")
         resp2 = await client.post(
             twofa_url,
@@ -197,6 +221,22 @@ async def auto_login() -> str:
                 "twofa_type": "totp",
             },
         )
+
+        # Handle 403 with a retry using fresh TOTP (timing issue)
+        if resp2.status_code == 403:
+            logger.warning("Kite 2FA returned 403, retrying with fresh TOTP...")
+            import time as _time
+            _time.sleep(1)
+            resp2 = await client.post(
+                twofa_url,
+                data={
+                    "user_id": settings.kite_user_id,
+                    "request_id": request_id,
+                    "twofa_value": totp.now(),
+                    "twofa_type": "totp",
+                },
+            )
+
         resp2.raise_for_status()
 
         # Check if twofa response directly contains request_token
@@ -210,7 +250,7 @@ async def auto_login() -> str:
 
             # Collect all cookies and forward them cross-domain
             all_cookies = {}
-            for r in (resp1, resp2):
+            for r in (page_resp, resp1, resp2):
                 for name, value in r.cookies.items():
                     all_cookies[name] = value
 
@@ -250,8 +290,8 @@ async def auto_login() -> str:
 
         if not request_token:
             raise RuntimeError(
-                "Could not extract request_token from Kite login flow. "
-                "Use semi-auto login (option 'k' → '2') to login via browser."
+                "Could not extract request_token. "
+                "Use browser login (option 'k' → '2') instead."
             )
 
         logger.info("Kite auto-login: got request_token=%s...", request_token[:8])

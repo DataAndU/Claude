@@ -404,25 +404,25 @@ def try_connect_kite():
     print(f"""
   {W}Choose login method:{N}
 
-  {C}1{N}  Auto login   {DIM}(TOTP headless — no browser needed){N}
-  {C}2{N}  Browser login {DIM}(open Zerodha in phone browser){N}
-  {C}3{N}  Paste token   {DIM}(paste the redirect URL after browser login){N}
+  {C}1{N}  Browser login {DIM}(open Zerodha in phone browser) {G}← Recommended{N}
+  {C}2{N}  Paste token   {DIM}(paste the redirect URL after browser login){N}
+  {C}3{N}  Auto login    {DIM}(TOTP headless — may be blocked by Zerodha){N}
   {C}0{N}  Cancel
 """)
     method = input(f"  {C}>{N} ").strip()
 
     if method == "1":
-        _kite_login_auto()
-    elif method == "2":
         _kite_login_browser()
-    elif method == "3":
+    elif method == "2":
         _kite_login_paste()
+    elif method == "3":
+        _kite_login_auto()
     else:
         print(f"  {DIM}Cancelled.{N}")
 
 
 def _kite_login_auto():
-    """Method 1: Fully automatic TOTP login."""
+    """Method 3: Fully automatic TOTP login (may be blocked by Zerodha)."""
     from app.core.config import get_settings
     s = get_settings()
 
@@ -431,21 +431,28 @@ def _kite_login_auto():
         print(f"  {DIM}Need: KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET{N}")
         return
 
-    print(f"\n  {C}Step 1:{N} Sending login credentials...")
-    print(f"  {C}Step 2:{N} Generating TOTP & submitting...")
-    print(f"  {C}Step 3:{N} Extracting request token...")
-    print(f"  {C}Step 4:{N} Creating session...\n")
+    print(f"\n  {DIM}Note: Zerodha may block headless login requests (403 Forbidden).{N}")
+    print(f"  {DIM}If this fails, use browser login (option 1) instead.{N}\n")
+    print(f"  {C}Step 1:{N} Loading login page (CSRF cookies)...")
+    print(f"  {C}Step 2:{N} Sending credentials...")
+    print(f"  {C}Step 3:{N} Generating TOTP & submitting...")
+    print(f"  {C}Step 4:{N} Extracting request token...")
+    print(f"  {C}Step 5:{N} Creating session...\n")
 
     status = asyncio.get_event_loop().run_until_complete(try_kite_auto())
     if status == "CONNECTED":
         print(f"  {G}Connected to Kite successfully!{N}")
     else:
         print(f"  {R}{status}{N}")
-        print(f"\n  {Y}Tip:{N} Try browser login instead (option 2)")
+        if "403" in status:
+            print(f"\n  {Y}Zerodha blocked the headless login request.{N}")
+            print(f"  {W}Use browser login (option 1) — it always works.{N}")
+        else:
+            print(f"\n  {Y}Tip:{N} Try browser login instead (option 1)")
 
 
 def _kite_login_browser():
-    """Method 2: Semi-automatic — open Kite in browser, capture via callback."""
+    """Method 1 (Recommended): Open Kite in phone browser, capture token."""
     from app.core.kite import (
         get_semi_auto_login_url, start_callback_listener,
         wait_for_callback, semi_auto_login, _get_device_ip,
@@ -454,77 +461,89 @@ def _kite_login_browser():
     login_url = get_semi_auto_login_url()
     device_ip = _get_device_ip()
 
-    # Start the callback server
+    # Start the callback server in background
     server = start_callback_listener()
-    if server:
-        callback_url = f"http://{device_ip}:5678"
-        print(f"  {G}Callback server started on port 5678{N}\n")
-    else:
-        callback_url = None
-        print(f"  {Y}Could not start callback server.{N}")
-        print(f"  {DIM}You'll need to paste the redirect URL manually (option 3).{N}\n")
+    has_server = server is not None
 
-    # Show login URL
-    print(f"  {W}Open this URL in your phone browser:{N}\n")
-    print(f"  {G}{login_url}{N}\n")
-
-    # Try to open URL automatically
+    # Try to open URL in phone browser automatically
+    opened = False
     try:
         import subprocess
         subprocess.Popen(
             ["termux-open-url", login_url],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        print(f"  {DIM}(Attempted to open automatically){N}")
+        opened = True
     except FileNotFoundError:
         try:
             subprocess.Popen(
                 ["xdg-open", login_url],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            print(f"  {DIM}(Attempted to open automatically){N}")
+            opened = True
         except FileNotFoundError:
             pass
 
-    print(f"""
-  {W}Instructions:{N}
-  {DIM}1. Open the URL above in your phone browser{N}
-  {DIM}2. Login to Zerodha with your credentials{N}
-  {DIM}3. Approve the app permissions{N}
-  {DIM}4. After redirect, come back here{N}
-""")
+    if opened:
+        print(f"\n  {G}Opening Zerodha login in your browser...{N}\n")
+    else:
+        print(f"\n  {W}Open this URL in your phone browser:{N}\n")
+        print(f"  {C}╔══════════════════════════════════════════════════════════╗{N}")
+        print(f"  {C}║{N} {G}{login_url}{N}")
+        print(f"  {C}╚══════════════════════════════════════════════════════════╝{N}\n")
 
-    if callback_url:
-        print(f"  {DIM}NOTE: Set your Kite app redirect URL to:{N}")
-        print(f"  {C}{callback_url}{N}")
+    print(f"  {W}Steps:{N}")
+    print(f"  {C}1.{N} Login to Zerodha with your ID & password")
+    print(f"  {C}2.{N} Enter your TOTP/PIN when asked")
+    print(f"  {C}3.{N} Approve the app access")
+    print(f"  {C}4.{N} After redirect, the browser may show an error page")
+    print(f"     {DIM}— that's normal! Just come back here.{N}")
+    print()
+
+    if has_server:
+        print(f"  {DIM}Callback server listening on port 5678...{N}")
+        print(f"  {DIM}(Set Kite redirect URL to http://{device_ip}:5678 for auto-capture){N}")
         print()
-        print(f"  {Y}Waiting for Kite callback (up to 3 minutes)...{N}")
-        print(f"  {DIM}Press Ctrl+C to cancel and use paste method instead{N}\n")
+        print(f"  {Y}Waiting for login... (up to 3 min, Ctrl+C to skip){N}\n")
 
         try:
             token = wait_for_callback(timeout=180)
         except KeyboardInterrupt:
             token = None
-            print(f"\n  {Y}Cancelled.{N}")
+            print(f"\n  {Y}Skipped waiting.{N}")
 
         if token:
-            print(f"  {G}Got request token!{N} Exchanging for session...")
+            print(f"  {G}Got token from callback!{N} Creating session...")
             try:
-                result = asyncio.get_event_loop().run_until_complete(
-                    semi_auto_login(token)
-                )
+                asyncio.get_event_loop().run_until_complete(semi_auto_login(token))
                 print(f"  {G}Connected to Kite successfully!{N}")
                 return
             except Exception as e:
-                print(f"  {R}Session exchange failed: {e}{N}")
+                print(f"  {R}Session failed: {e}{N}")
         else:
-            print(f"  {Y}No callback received.{N}")
+            print(f"  {DIM}Callback not received (redirect URL may not point here).{N}")
 
-    # Fallback to paste
-    print(f"\n  {W}Fallback:{N} After logging in, your browser will redirect to a URL.")
-    print(f"  {DIM}Copy the FULL URL from your browser's address bar and paste below.{N}")
-    print(f"  {DIM}It looks like: https://your-redirect-url?request_token=xxx&action=login{N}\n")
-    _kite_login_paste()
+    # Fallback: paste the URL
+    print(f"\n  {W}Paste the redirect URL from your browser:{N}")
+    print(f"  {DIM}After login, your browser redirects to a URL like:{N}")
+    print(f"  {DIM}https://...?request_token=xxxxxxxx&action=login{N}")
+    print(f"  {DIM}Copy the FULL URL from the address bar and paste below.{N}\n")
+
+    url_or_token = input(f"  {C}URL/Token:{N} ").strip()
+    if not url_or_token:
+        print(f"  {DIM}Cancelled.{N}")
+        return
+
+    try:
+        status = asyncio.get_event_loop().run_until_complete(
+            try_kite_manual(url_or_token)
+        )
+        if status == "CONNECTED":
+            print(f"\n  {G}Connected to Kite successfully!{N}")
+        else:
+            print(f"\n  {R}{status}{N}")
+    except Exception as e:
+        print(f"\n  {R}Login failed: {e}{N}")
 
 
 def _kite_login_paste():
