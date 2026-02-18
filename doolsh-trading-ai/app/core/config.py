@@ -132,6 +132,34 @@ class Settings(BaseSettings):
         return json.loads(self.cors_origins)
 
 
+def _validate_settings(s: Settings) -> None:
+    """Warn about insecure defaults and missing credentials at startup."""
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    if s.secret_key == "change-me-to-a-random-64-char-string":
+        _logger.warning(
+            "SECURITY: secret_key is set to the default value. "
+            "Set SECRET_KEY in your .env file to a random 64-char string."
+        )
+    if s.jwt_secret_key == "change-me-jwt-secret":
+        _logger.warning(
+            "SECURITY: jwt_secret_key is set to the default value. "
+            "Set JWT_SECRET_KEY in your .env file to a unique secret."
+        )
+    if not s.kite_api_key and s.trading_mode == "live":
+        _logger.error(
+            "CRITICAL: trading_mode is 'live' but KITE_API_KEY is not set. "
+            "Live trading will fail."
+        )
+    if s.trading_mode == "live":
+        _logger.warning(
+            "*** LIVE TRADING MODE ACTIVE *** Real money will be used for orders."
+        )
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    _validate_settings(s)
+    return s

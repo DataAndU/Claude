@@ -22,9 +22,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Auto-Trading System", version="1.0.0")
 
+_cors_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:8000,http://localhost:8501",
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -69,11 +75,32 @@ class KillSwitchRequest(BaseModel):
 # ─── Startup ──────────────────────────────────────────────────────────────────
 
 
+_scheduler = None
+
+
 @app.on_event("startup")
 def startup():
     cfg = load_config()
     init_db(cfg.db_path)
     logger.info("API started — mode=%s", cfg.mode)
+
+
+@app.on_event("shutdown")
+def shutdown():
+    global _auto_trading, _scheduler
+    logger.info("Shutting down API — stopping auto-trading and cleaning up...")
+    _auto_trading = False
+    if _scheduler is not None:
+        try:
+            _scheduler.shutdown(wait=False)
+        except Exception as e:
+            logger.warning("Scheduler shutdown error: %s", e)
+        _scheduler = None
+    from core.database import get_engine
+    engine = get_engine()
+    if engine:
+        engine.dispose()
+    logger.info("Shutdown complete.")
 
 
 # ─── System ───────────────────────────────────────────────────────────────────
@@ -139,7 +166,8 @@ def fetch_data(symbol: str, timeframe: str = "1h", limit: int = 200):
 
     try:
         df = fetch_ohlcv(sym, timeframe=timeframe, limit=limit, exchange_id=cfg.exchange)
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_ohlcv failed for %s, falling back to synthetic: %s", sym, e)
         df = generate_synthetic(sym, bars=limit)
 
     if df.empty:
@@ -176,7 +204,8 @@ def generate_signal(req: SignalRequest):
     cfg = load_config()
     try:
         df = fetch_ohlcv(req.symbol, timeframe=req.timeframe, limit=req.limit, exchange_id=cfg.exchange)
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_ohlcv failed for signal %s, falling back to synthetic: %s", req.symbol, e)
         df = generate_synthetic(req.symbol, bars=req.limit)
 
     if df.empty:
@@ -185,17 +214,19 @@ def generate_signal(req: SignalRequest):
     sig = gen_sig(df, req.symbol, req.timeframe, model_type=req.model_type)
 
     # Log to DB
+    session = get_session()
     try:
-        session = get_session()
         session.add(Signal(
             symbol=req.symbol, timeframe=req.timeframe,
             signal=sig["signal"], confidence=sig["confidence"],
             model_type=req.model_type,
         ))
         session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.error("Failed to log signal to DB: %s", e)
+    finally:
         session.close()
-    except Exception:
-        pass
 
     return sig
 
@@ -229,7 +260,8 @@ def train_model(req: TrainRequest):
     cfg = load_config()
     try:
         df = fetch_ohlcv(req.symbol, timeframe=req.timeframe, limit=req.limit, exchange_id=cfg.exchange)
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_ohlcv failed for training %s, falling back to synthetic: %s", req.symbol, e)
         df = generate_synthetic(req.symbol, bars=req.limit)
 
     if df.empty:
@@ -278,7 +310,8 @@ def run_backtest(req: BacktestRequest):
     cfg = load_config()
     try:
         df = fetch_ohlcv(req.symbol, timeframe=req.timeframe, limit=req.limit, exchange_id=cfg.exchange)
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_ohlcv failed for backtest %s, falling back to synthetic: %s", req.symbol, e)
         df = generate_synthetic(req.symbol, bars=req.limit)
 
     if df.empty:
@@ -367,7 +400,8 @@ def close_trade(symbol: str):
     try:
         ticker = fetch_ticker(sym, exchange_id=cfg.exchange)
         price = ticker.get("last", 0)
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to fetch ticker for %s: %s", sym, e)
         price = 0
 
     if price <= 0:
@@ -410,12 +444,14 @@ def set_kill_switch(req: KillSwitchRequest):
 # ─── Auto-Trading Loop ───────────────────────────────────────────────────────
 
 _auto_trading = False
+_consecutive_cycle_errors = 0
+_MAX_CYCLE_ERRORS = 5  # Stop auto-trading after this many consecutive failures
 
 
 @app.post("/api/auto/start")
 def start_auto_trading():
     """Start the auto-trading loop."""
-    global _auto_trading
+    global _auto_trading, _scheduler
     if _auto_trading:
         return {"status": "already_running"}
 
@@ -429,9 +465,9 @@ def start_auto_trading():
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
 
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(_trading_cycle, "interval", minutes=60, id="trading_cycle")
-        scheduler.start()
+        _scheduler = BackgroundScheduler()
+        _scheduler.add_job(_trading_cycle, "interval", minutes=60, id="trading_cycle")
+        _scheduler.start()
         logger.info("Auto-trading started (1h cycle)")
     except ImportError:
         logger.warning("APScheduler not installed — auto-trading requires manual trigger")
@@ -442,13 +478,14 @@ def start_auto_trading():
 @app.post("/api/auto/stop")
 def stop_auto_trading():
     """Stop the auto-trading loop."""
-    global _auto_trading
+    global _auto_trading, _scheduler
     _auto_trading = False
-    try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-        # Signal the scheduler to stop on next check
-    except Exception:
-        pass
+    if _scheduler is not None:
+        try:
+            _scheduler.shutdown(wait=False)
+        except Exception as e:
+            logger.warning("Could not stop scheduler cleanly: %s", e)
+        _scheduler = None
     return {"status": "stopped"}
 
 
@@ -458,7 +495,12 @@ def auto_status():
 
 
 def _trading_cycle():
-    """One auto-trading cycle: fetch data, generate signals, execute."""
+    """One auto-trading cycle: fetch data, generate signals, execute.
+
+    Includes a circuit breaker that halts auto-trading after repeated failures.
+    """
+    global _auto_trading, _consecutive_cycle_errors
+
     if not _auto_trading:
         return
 
@@ -468,6 +510,7 @@ def _trading_cycle():
 
     cfg = load_config()
     all_tfs = [cfg.primary_timeframe] + cfg.confirmation_timeframes
+    cycle_had_error = False
 
     for symbol in cfg.symbols:
         try:
@@ -491,6 +534,20 @@ def _trading_cycle():
 
         except Exception as e:
             logger.error("Trading cycle error for %s: %s", symbol, e)
+            cycle_had_error = True
+
+    # Circuit breaker: track consecutive failures
+    if cycle_had_error:
+        _consecutive_cycle_errors += 1
+        if _consecutive_cycle_errors >= _MAX_CYCLE_ERRORS:
+            logger.error(
+                "CIRCUIT BREAKER: %d consecutive cycle errors — halting auto-trading. "
+                "Restart via /api/auto/start after investigating.",
+                _consecutive_cycle_errors,
+            )
+            _auto_trading = False
+    else:
+        _consecutive_cycle_errors = 0
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────

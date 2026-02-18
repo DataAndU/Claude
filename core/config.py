@@ -174,6 +174,38 @@ class Config:
         return int(self._get("dashboard", "port", default=8501))
 
 
+def _validate_config(cfg: Config) -> None:
+    """Warn about dangerous configuration at startup."""
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    if cfg.mode == "live":
+        _logger.warning(
+            "*** LIVE TRADING MODE ACTIVE *** Real money will be used for orders. "
+            "Set TRADING_MODE=paper to disable."
+        )
+        if not os.getenv("EXCHANGE_API_KEY"):
+            _logger.error(
+                "CRITICAL: TRADING_MODE is 'live' but EXCHANGE_API_KEY is not set. "
+                "Live trading will fail."
+            )
+
+    # Validate risk parameter bounds
+    if not (0 < cfg.max_position_pct < 0.5):
+        _logger.warning(
+            "Risk: max_position_pct=%.4f is outside safe bounds (0, 0.5). "
+            "This could lead to excessive position sizes.",
+            cfg.max_position_pct,
+        )
+    if not (0 < cfg.max_daily_loss_pct < 1.0):
+        _logger.warning(
+            "Risk: max_daily_loss_pct=%.4f is outside safe bounds (0, 1.0).",
+            cfg.max_daily_loss_pct,
+        )
+    if cfg.atr_sl_multiplier <= 0:
+        _logger.warning("Risk: atr_sl_multiplier=%.2f must be > 0.", cfg.atr_sl_multiplier)
+
+
 @lru_cache
 def load_config(path: str = "config/config.yaml") -> Config:
     """Load and cache configuration."""
@@ -183,4 +215,6 @@ def load_config(path: str = "config/config.yaml") -> Config:
             data = yaml.safe_load(f) or {}
     else:
         data = {}
-    return Config(data)
+    cfg = Config(data)
+    _validate_config(cfg)
+    return cfg

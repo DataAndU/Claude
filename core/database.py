@@ -21,6 +21,8 @@ from sqlalchemy import (
     Text,
     create_engine,
 )
+from contextlib import contextmanager
+
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -116,6 +118,20 @@ def get_session() -> Session:
     if _SessionLocal is None:
         init_db()
     return _SessionLocal()
+
+
+@contextmanager
+def session_scope():
+    """Context manager that auto-commits on success and rolls back on error."""
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def get_engine():

@@ -35,9 +35,11 @@ class RiskState:
     def ensure_today(self):
         if date.today() != self.trade_date:
             logger.info("New day — resetting risk state")
-            old_pnl = self.realized_pnl
+            carry_equity = self.current_equity
             self.reset()
-            self.peak_equity = self.current_equity
+            # Preserve equity across day resets instead of losing it
+            self.current_equity = carry_equity
+            self.peak_equity = carry_equity
 
 
 _state = RiskState()
@@ -73,6 +75,10 @@ def check_risk(
     # Rule 0: Kill switch
     if cfg.kill_switch:
         return _deny("KILL SWITCH is ON — all trading halted")
+
+    # Rule 0b: Zero or negative equity
+    if state.current_equity <= 0:
+        return _deny(f"Equity is {state.current_equity:.2f} — cannot trade with zero or negative equity")
 
     # Rule 1: Confidence threshold
     confidence = signal.get("confidence", 0)
