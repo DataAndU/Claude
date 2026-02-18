@@ -1,0 +1,66 @@
+# =============================================================================
+# AI Auto-Trading System — Configuration
+# =============================================================================
+# Copy this file and modify as needed. Never commit secrets.
+
+system:
+  mode: paper                # paper (default) or live
+  log_level: INFO
+  db_path: database/trading.db
+  timezone: UTC
+
+trading:
+  exchange: binance
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+  timeframes:
+    primary: 1h
+    confirmation:
+      - 4h
+      - 1d
+  default_capital: 10000.0   # USDT paper balance
+
+risk:
+  max_position_pct: 0.02     # 2% of capital per trade
+  atr_sl_multiplier: 2.0     # stop loss = 2x ATR
+  atr_tp_multiplier: 3.0     # take profit = 3x ATR
+  max_daily_loss_pct: 0.05   # 5% daily loss cap
+  max_drawdown_pct: 0.15     # 15% max drawdown kill
+  cooldown_minutes: 30       # wait after trade
+  max_open_trades: 3
+  kill_switch: false          # emergency stop all trading
+
+model:
+  primary: random_forest
+  fallback: xgboost
+  retrain_hours: 6
+  lookback_days: 90
+  prediction_horizon: 5      # bars ahead
+  min_confidence: 0.60
+  features: auto              # auto = use feature importance
+  random_forest:
+    n_estimators: 100
+    max_depth: 10
+  xgboost:
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+  lstm:
+    enabled: false            # disabled by default (saves RAM)
+    seq_len: 20
+    hidden_size: 64
+    epochs: 30
+    batch_size: 32
+
+backtest:
+  initial_capital: 10000.0
+  commission_pct: 0.001       # 0.1% per trade
+  slippage_pct: 0.0005        # 0.05%
+
+api:
+  host: 0.0.0.0
+  port: 8000
+
+dashboard:
+  port: 8501

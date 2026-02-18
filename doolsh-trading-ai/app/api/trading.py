@@ -28,6 +28,11 @@ from ml.features.engineering import build_features
 from ml.training.lstm_model import train_lstm
 from ml.training.random_forest import train_random_forest
 
+try:
+    from ml.training.transformer_model import train_transformer
+except ImportError:
+    train_transformer = None
+
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -56,6 +61,21 @@ async def train_model(
             max_depth=hp.get("max_depth", 12),
             version=body.version,
         )
+    elif body.model_type == "transformer":
+        if train_transformer is None:
+            raise HTTPException(status_code=400, detail="Transformer model requires PyTorch")
+        result = train_transformer(
+            featured, symbol=body.symbol, horizon=body.horizon,
+            seq_len=hp.get("seq_len", settings.transformer_seq_len),
+            d_model=hp.get("d_model", settings.transformer_d_model),
+            n_heads=hp.get("n_heads", settings.transformer_n_heads),
+            n_layers=hp.get("n_layers", settings.transformer_n_layers),
+            epochs=hp.get("epochs", 60),
+            batch_size=hp.get("batch_size", 64),
+            lr=hp.get("lr", 5e-4),
+            dropout=hp.get("dropout", settings.transformer_dropout),
+            version=body.version,
+        )
     else:
         result = train_lstm(
             featured, symbol=body.symbol, horizon=body.horizon,
@@ -82,16 +102,23 @@ async def train_model(
 async def predict(body: PredictRequest, user: User = Depends(get_current_user)):
     save_dir = Path(settings.model_save_dir)
 
-    if body.model_type == "ensemble":
-        rf_path = save_dir / f"rf_{body.symbol}_{body.model_version}.pkl"
-        lstm_path = save_dir / f"lstm_{body.symbol}_{body.model_version}.pt"
-        if not rf_path.exists() or not lstm_path.exists():
-            raise HTTPException(status_code=404, detail="Both RF and LSTM models required for ensemble")
-        model_path = str(rf_path)
+    rf_path_str = str(save_dir / f"rf_{body.symbol}_{body.model_version}.pkl")
+    lstm_path_str = str(save_dir / f"lstm_{body.symbol}_{body.model_version}.pt")
+    transformer_path_str = str(save_dir / f"transformer_{body.symbol}_{body.model_version}.pt")
+
+    is_ensemble = body.model_type in ("ensemble", "adaptive_ensemble")
+
+    if is_ensemble:
+        # For ensemble, at least RF must exist
+        if not Path(rf_path_str).exists():
+            raise HTTPException(status_code=404, detail="RF model required for ensemble")
+        model_path = rf_path_str
+    elif body.model_type == "transformer":
+        model_path = transformer_path_str
     elif body.model_type == "rf":
-        model_path = str(save_dir / f"rf_{body.symbol}_{body.model_version}.pkl")
+        model_path = rf_path_str
     else:
-        model_path = str(save_dir / f"lstm_{body.symbol}_{body.model_version}.pt")
+        model_path = lstm_path_str
 
     if not Path(model_path).exists():
         raise HTTPException(status_code=404, detail=f"Model not found: {model_path}")
@@ -103,10 +130,12 @@ async def predict(body: PredictRequest, user: User = Depends(get_current_user)):
 
     sigs = generate_signals(
         df, model_path=model_path,
-        model_type=body.model_type if body.model_type != "ensemble" else "rf",
-        ensemble=body.model_type == "ensemble",
-        rf_path=str(save_dir / f"rf_{body.symbol}_{body.model_version}.pkl") if body.model_type == "ensemble" else None,
-        lstm_path=str(save_dir / f"lstm_{body.symbol}_{body.model_version}.pt") if body.model_type == "ensemble" else None,
+        model_type=body.model_type if not is_ensemble else "rf",
+        ensemble=is_ensemble,
+        rf_path=rf_path_str if is_ensemble and Path(rf_path_str).exists() else None,
+        lstm_path=lstm_path_str if is_ensemble and Path(lstm_path_str).exists() else None,
+        transformer_path=transformer_path_str if is_ensemble and Path(transformer_path_str).exists() else None,
+        use_ai_confidence=True,
     )
 
     return PredictResponse(
@@ -121,6 +150,8 @@ async def backtest(body: BacktestRequest, user: User = Depends(get_current_user)
     save_dir = Path(settings.model_save_dir)
     if body.model_type == "rf":
         model_path = str(save_dir / f"rf_{body.symbol}_{body.model_version}.pkl")
+    elif body.model_type == "transformer":
+        model_path = str(save_dir / f"transformer_{body.symbol}_{body.model_version}.pt")
     else:
         model_path = str(save_dir / f"lstm_{body.symbol}_{body.model_version}.pt")
 
@@ -132,7 +163,7 @@ async def backtest(body: BacktestRequest, user: User = Depends(get_current_user)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Market data fetch failed: {exc}")
 
-    sigs = generate_signals(df, model_path=model_path, model_type=body.model_type)
+    sigs = generate_signals(df, model_path=model_path, model_type=body.model_type, use_ai_confidence=True)
 
     config = BacktestConfig(
         initial_capital=body.initial_capital, commission_rate=body.commission_rate,
