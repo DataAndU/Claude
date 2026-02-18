@@ -8,11 +8,16 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader, TensorDataset
+
+try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 from app.core.config import get_settings
 
@@ -26,19 +31,12 @@ FEATURE_COLS = [
 ]
 
 
-class LSTMClassifier(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int = 128, num_layers: int = 2,
-                 num_classes: int = 3, dropout: float = 0.3):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size,
-                            num_layers=num_layers, batch_first=True,
-                            dropout=dropout if num_layers > 1 else 0.0)
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(hidden_size, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        lstm_out, _ = self.lstm(x)
-        return self.fc(self.dropout(lstm_out[:, -1, :]))
+def _require_torch():
+    if not HAS_TORCH:
+        raise ImportError(
+            "PyTorch is not installed. Install with: "
+            "pip install torch --index-url https://download.pytorch.org/whl/cpu"
+        )
 
 
 def _create_sequences(X: np.ndarray, y: np.ndarray, seq_len: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -56,11 +54,34 @@ def _label_signal(returns: pd.Series, threshold: float = 0.005) -> np.ndarray:
     return labels
 
 
+def _build_lstm_model(input_size: int, hidden_size: int = 128, num_layers: int = 2,
+                      num_classes: int = 3, dropout: float = 0.3):
+    """Build an LSTM classifier. Only callable when torch is available."""
+    _require_torch()
+
+    class LSTMClassifier(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size,
+                                num_layers=num_layers, batch_first=True,
+                                dropout=dropout if num_layers > 1 else 0.0)
+            self.dropout = nn.Dropout(dropout)
+            self.fc = nn.Linear(hidden_size, num_classes)
+
+        def forward(self, x):
+            lstm_out, _ = self.lstm(x)
+            return self.fc(self.dropout(lstm_out[:, -1, :]))
+
+    return LSTMClassifier()
+
+
 def train_lstm(
     df: pd.DataFrame, symbol: str, seq_len: int = 30,
     hidden_size: int = 128, num_layers: int = 2, epochs: int = 50,
     batch_size: int = 64, lr: float = 1e-3, horizon: int = 5, version: str = "v1",
 ) -> Dict[str, Any]:
+    _require_torch()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     available = [c for c in FEATURE_COLS if c in df.columns]
     data = df[available].copy()
@@ -83,7 +104,7 @@ def train_lstm(
     train_ds = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
 
-    model = LSTMClassifier(input_size=len(available), hidden_size=hidden_size, num_layers=num_layers).to(device)
+    model = _build_lstm_model(input_size=len(available), hidden_size=hidden_size, num_layers=num_layers).to(device)
     criterion = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 0.5, 1.0], device=device))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler_lr = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
@@ -136,6 +157,8 @@ def train_lstm(
 
 
 def predict_lstm(model_path: str, df: pd.DataFrame) -> np.ndarray:
+    _require_torch()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     feature_cols = checkpoint["feature_cols"]
@@ -150,8 +173,8 @@ def predict_lstm(model_path: str, df: pd.DataFrame) -> np.ndarray:
         raise ValueError(f"Need at least {seq_len} rows, got {len(data)}")
 
     X = np.array([data[i:i + seq_len] for i in range(len(data) - seq_len + 1)])
-    model = LSTMClassifier(input_size=len(feature_cols), hidden_size=checkpoint["hidden_size"],
-                           num_layers=checkpoint["num_layers"]).to(device)
+    model = _build_lstm_model(input_size=len(feature_cols), hidden_size=checkpoint["hidden_size"],
+                              num_layers=checkpoint["num_layers"]).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     with torch.no_grad():

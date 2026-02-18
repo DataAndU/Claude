@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doolsh Trading AI</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --card: #1a1d29;
+  --border: #2a2d3a;
+  --text: #e1e4ea;
+  --muted: #8b8fa3;
+  --green: #00c853;
+  --red: #ff1744;
+  --orange: #ff9100;
+  --blue: #2979ff;
+  --purple: #7c4dff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.header {
+  background: linear-gradient(135deg, #1a1d29 0%, #252836 100%);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.header h1 {
+  font-size: 20px;
+  font-weight: 700;
+  background: linear-gradient(90deg, var(--blue), var(--purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.header-right { display: flex; gap: 12px; align-items: center; }
+.badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge-paper { background: rgba(41,121,255,0.2); color: var(--blue); }
+.badge-live { background: rgba(255,23,68,0.2); color: var(--red); }
+.badge-ok { background: rgba(0,200,83,0.2); color: var(--green); }
+.badge-off { background: rgba(139,143,163,0.2); color: var(--muted); }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+.status-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  text-align: center;
+}
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+.stat-value.green { color: var(--green); }
+.stat-value.red { color: var(--red); }
+.stat-value.blue { color: var(--blue); }
+
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+.btn:active { transform: translateY(0); }
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-success { background: var(--green); color: #000; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-outline {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-outline:hover { border-color: var(--blue); color: var(--blue); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+.tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 10px 20px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h3 {
+  font-size: 14px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 14px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th {
+  text-align: left;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+tr:last-child td { border-bottom: none; }
+tr:hover { background: rgba(255,255,255,0.02); }
+.action-strong-sell { color: var(--red); font-weight: 700; }
+.action-sell { color: var(--orange); font-weight: 600; }
+.action-weak-sell { color: #ffeb3b; }
+.action-hold { color: var(--muted); }
+
+.score-bar {
+  display: inline-block;
+  width: 60px;
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+.score-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s;
+}
+
+.reasons {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 250px;
+}
+.reason-tag {
+  display: inline-block;
+  background: rgba(255,255,255,0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin: 1px;
+  font-size: 10px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px; height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast-area {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  animation: slideIn 0.3s;
+  min-width: 260px;
+}
+.toast-success { background: rgba(0,200,83,0.15); color: var(--green); border: 1px solid rgba(0,200,83,0.3); }
+.toast-error { background: rgba(255,23,68,0.15); color: var(--red); border: 1px solid rgba(255,23,68,0.3); }
+.toast-info { background: rgba(41,121,255,0.15); color: var(--blue); border: 1px solid rgba(41,121,255,0.3); }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+.login-box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  width: 360px;
+}
+.login-box h2 { margin-bottom: 20px; font-size: 18px; }
+.input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.input:focus { outline: none; border-color: var(--blue); }
+
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--muted);
+}
+.empty-state p { margin-top: 8px; font-size: 13px; }
+
+@media (max-width: 600px) {
+  .container { padding: 12px; }
+  .status-bar { grid-template-columns: repeat(2, 1fr); }
+  .header h1 { font-size: 16px; }
+  table { font-size: 11px; }
+  th, td { padding: 8px 6px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Login Overlay -->
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-box">
+    <h2>Doolsh Trading AI</h2>
+    <p style="color:var(--muted); font-size:13px; margin-bottom:20px;">Login to access the trading dashboard</p>
+    <input id="loginUser" class="input" type="text" placeholder="Username" value="admin">
+    <input id="loginPass" class="input" type="password" placeholder="Password" value="Admin@12345">
+    <button id="loginBtn" class="btn btn-primary" style="width:100%;" onclick="doLogin()">Login</button>
+    <p id="loginError" style="color:var(--red);font-size:12px;margin-top:10px;display:none;"></p>
+  </div>
+</div>
+
+<!-- Header -->
+<div class="header">
+  <h1>DOOLSH TRADING AI</h1>
+  <div class="header-right">
+    <span id="modeBadge" class="badge badge-paper">PAPER</span>
+    <span id="kiteBadge" class="badge badge-off">KITE: OFF</span>
+    <span id="marketBadge" class="badge badge-off">MARKET: CLOSED</span>
+    <button class="btn btn-outline" onclick="doLogout()" style="padding:6px 14px;font-size:12px;">Logout</button>
+  </div>
+</div>
+
+<!-- Main Content -->
+<div class="container">
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <div class="stat">
+      <div class="stat-label">Day P&L</div>
+      <div id="dayPnl" class="stat-value green">0.00</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Trades Today</div>
+      <div id="dayTrades" class="stat-value blue">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Open Positions</div>
+      <div id="openPos" class="stat-value blue">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Auto-Trading</div>
+      <div id="autoStatus" class="stat-value red">OFF</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Strong Sells</div>
+      <div id="strongSells" class="stat-value red">-</div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <button class="btn btn-primary" onclick="runScan()">Scan F&O Symbols</button>
+    <button class="btn btn-success" id="autoTradeBtn" onclick="toggleAutoTrade()">Enable Auto-Trade</button>
+    <button class="btn btn-outline" onclick="refreshStatus()">Refresh Status</button>
+    <button class="btn btn-outline" onclick="connectKite()">Connect Kite</button>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" data-tab="scanner">F&O Scanner</div>
+    <div class="tab" data-tab="orders">Orders & Trades</div>
+    <div class="tab" data-tab="positions">Positions</div>
+    <div class="tab" data-tab="risk">Risk Status</div>
+  </div>
+
+  <!-- Scanner Panel -->
+  <div id="panel-scanner" class="panel active">
+    <div class="card">
+      <h3>F&O Short-Sell Scanner</h3>
+      <div id="scannerLoading" style="display:none;"><span class="spinner"></span> Scanning symbols...</div>
+      <div id="scannerEmpty" class="empty-state">
+        <p style="font-size:16px;">Click "Scan F&O Symbols" to analyse</p>
+        <p>Scans 40 NSE F&O stocks for intraday short-sell opportunities using RSI, MACD, Bollinger Bands, momentum, and trend analysis</p>
+      </div>
+      <div id="scannerTable" style="display:none;">
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Symbol</th>
+                <th>Score</th>
+                <th>Action</th>
+                <th>Price</th>
+                <th>RSI</th>
+                <th>MACD Hist</th>
+                <th>BB%</th>
+                <th>1D Ret%</th>
+                <th>Vol</th>
+                <th>Reasons</th>
+              </tr>
+            </thead>
+            <tbody id="scannerBody"></tbody>
+          </table>
+        </div>
+        <p id="scanSummary" style="margin-top:14px;font-size:12px;color:var(--muted);"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Orders Panel -->
+  <div id="panel-orders" class="panel">
+    <div class="card">
+      <h3>Today's Orders</h3>
+      <div id="ordersEmpty" class="empty-state"><p>No orders yet</p></div>
+      <div id="ordersTable" style="display:none;overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Order ID</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Qty</th>
+              <th>Price</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Mode</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="ordersBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Positions Panel -->
+  <div id="panel-positions" class="panel">
+    <div class="card">
+      <h3>Open Positions</h3>
+      <div id="positionsEmpty" class="empty-state"><p>No open positions</p></div>
+      <div id="positionsTable" style="display:none;overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Qty</th>
+              <th>Entry Price</th>
+              <th>P&L</th>
+            </tr>
+          </thead>
+          <tbody id="positionsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Risk Panel -->
+  <div id="panel-risk" class="panel">
+    <div class="card">
+      <h3>Risk Management Status</h3>
+      <div id="riskContent">
+        <table>
+          <tbody id="riskBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<p style="text-align:center;color:var(--muted);font-size:11px;padding:20px;">
+  DISCLAIMER: For educational purposes only. Not financial advice. Automated trading involves substantial risk.
+</p>
+
+<script>
+const API = '/api/v1';
+let token = localStorage.getItem('doolsh_token') || '';
+let autoTrading = false;
+let refreshInterval = null;
+
+// ---- Auth ----
+function doLogin() {
+  const user = document.getElementById('loginUser').value;
+  const pass = document.getElementById('loginPass').value;
+  document.getElementById('loginBtn').disabled = true;
+  fetch(API + '/auth/login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: user, password: pass})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.access_token) {
+      token = data.access_token;
+      localStorage.setItem('doolsh_token', token);
+      document.getElementById('loginOverlay').style.display = 'none';
+      toast('Logged in successfully', 'success');
+      refreshStatus();
+      startAutoRefresh();
+    } else {
+      document.getElementById('loginError').textContent = data.detail || 'Login failed';
+      document.getElementById('loginError').style.display = 'block';
+    }
+  })
+  .catch(e => {
+    document.getElementById('loginError').textContent = 'Connection error';
+    document.getElementById('loginError').style.display = 'block';
+  })
+  .finally(() => {
+    document.getElementById('loginBtn').disabled = false;
+  });
+}
+
+function doLogout() {
+  token = '';
+  localStorage.removeItem('doolsh_token');
+  location.reload();
+}
+
+function authHeaders() {
+  return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+}
+
+// ---- API Calls ----
+async function apiFetch(path, opts = {}) {
+  opts.headers = { ...authHeaders(), ...(opts.headers || {}) };
+  const resp = await fetch(API + path, opts);
+  if (resp.status === 401) {
+    token = '';
+    localStorage.removeItem('doolsh_token');
+    document.getElementById('loginOverlay').style.display = 'flex';
+    throw new Error('Session expired');
+  }
+  return resp.json();
+}
+
+async function refreshStatus() {
+  try {
+    const [health, live, risk] = await Promise.all([
+      fetch('/health').then(r => r.json()),
+      apiFetch('/live/status'),
+      apiFetch('/live/risk')
+    ]);
+
+    // Mode badge
+    const modeBadge = document.getElementById('modeBadge');
+    modeBadge.textContent = health.mode.toUpperCase();
+    modeBadge.className = 'badge ' + (health.mode === 'live' ? 'badge-live' : 'badge-paper');
+
+    // Kite badge
+    const kiteBadge = document.getElementById('kiteBadge');
+    kiteBadge.textContent = 'KITE: ' + (live.kite_logged_in ? 'ON' : 'OFF');
+    kiteBadge.className = 'badge ' + (live.kite_logged_in ? 'badge-ok' : 'badge-off');
+
+    // Market badge
+    const marketBadge = document.getElementById('marketBadge');
+    marketBadge.textContent = 'MARKET: ' + (live.market_open ? 'OPEN' : 'CLOSED');
+    marketBadge.className = 'badge ' + (live.market_open ? 'badge-ok' : 'badge-off');
+
+    // Stats
+    const pnl = live.day_pnl || 0;
+    const pnlEl = document.getElementById('dayPnl');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
+
+    document.getElementById('dayTrades').textContent = live.day_trades || 0;
+    document.getElementById('openPos').textContent = live.open_positions || 0;
+
+    autoTrading = live.auto_trading;
+    const autoEl = document.getElementById('autoStatus');
+    autoEl.textContent = autoTrading ? 'ON' : 'OFF';
+    autoEl.className = 'stat-value ' + (autoTrading ? 'green' : 'red');
+
+    const autoBtn = document.getElementById('autoTradeBtn');
+    autoBtn.textContent = autoTrading ? 'Disable Auto-Trade' : 'Enable Auto-Trade';
+    autoBtn.className = autoTrading ? 'btn btn-danger' : 'btn btn-success';
+
+    // Risk panel
+    updateRiskPanel(risk);
+
+    // Orders
+    loadOrders();
+    loadPositions(risk);
+  } catch (e) {
+    if (e.message !== 'Session expired') console.error('Status refresh failed:', e);
+  }
+}
+
+function updateRiskPanel(risk) {
+  const body = document.getElementById('riskBody');
+  body.innerHTML = `
+    <tr><td style="color:var(--muted)">Trade Date</td><td>${risk.trade_date || '-'}</td></tr>
+    <tr><td style="color:var(--muted)">Realized P&L</td><td style="color:${risk.realized_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${risk.realized_pnl >= 0 ? '+' : ''}${(risk.realized_pnl || 0).toFixed(2)} INR</td></tr>
+    <tr><td style="color:var(--muted)">Trades Today</td><td>${risk.trade_count || 0} / ${risk.max_trade_count || 20}</td></tr>
+    <tr><td style="color:var(--muted)">Open Positions</td><td>${Object.keys(risk.open_positions || {}).length} / ${risk.max_open_positions || 5}</td></tr>
+    <tr><td style="color:var(--muted)">Max Daily Loss</td><td>${(risk.max_daily_loss || 5000).toFixed(0)} INR</td></tr>
+  `;
+}
+
+async function loadOrders() {
+  try {
+    const orders = await apiFetch('/orders/');
+    const body = document.getElementById('ordersBody');
+    if (!orders || orders.length === 0) {
+      document.getElementById('ordersEmpty').style.display = 'block';
+      document.getElementById('ordersTable').style.display = 'none';
+      return;
+    }
+    document.getElementById('ordersEmpty').style.display = 'none';
+    document.getElementById('ordersTable').style.display = 'block';
+    body.innerHTML = orders.map(o => `
+      <tr>
+        <td style="font-family:monospace;font-size:11px;">${o.order_id || '-'}</td>
+        <td><strong>${o.symbol || o.tradingsymbol || '-'}</strong></td>
+        <td style="color:${o.side === 'BUY' ? 'var(--green)' : 'var(--red)'}">${o.side || o.transaction_type || '-'}</td>
+        <td>${o.quantity || '-'}</td>
+        <td>${o.price ? o.price.toFixed(2) : '-'}</td>
+        <td>${o.order_type || '-'}</td>
+        <td>${o.status || '-'}</td>
+        <td><span class="badge ${o.mode === 'paper' ? 'badge-paper' : 'badge-live'}">${o.mode || '-'}</span></td>
+        <td style="font-size:11px;">${o.timestamp ? new Date(o.timestamp).toLocaleTimeString() : '-'}</td>
+      </tr>
+    `).join('');
+  } catch (e) {}
+}
+
+function loadPositions(risk) {
+  const positions = risk.open_positions || {};
+  const body = document.getElementById('positionsBody');
+  const entries = Object.entries(positions);
+  if (entries.length === 0) {
+    document.getElementById('positionsEmpty').style.display = 'block';
+    document.getElementById('positionsTable').style.display = 'none';
+    return;
+  }
+  document.getElementById('positionsEmpty').style.display = 'none';
+  document.getElementById('positionsTable').style.display = 'block';
+  body.innerHTML = entries.map(([sym, pos]) => `
+    <tr>
+      <td><strong>${sym}</strong></td>
+      <td style="color:${pos.side === 'BUY' ? 'var(--green)' : 'var(--red)'}">${pos.side}</td>
+      <td>${pos.quantity}</td>
+      <td>${(pos.entry_price || 0).toFixed(2)}</td>
+      <td>-</td>
+    </tr>
+  `).join('');
+}
+
+// ---- F&O Scanner ----
+async function runScan() {
+  document.getElementById('scannerEmpty').style.display = 'none';
+  document.getElementById('scannerTable').style.display = 'none';
+  document.getElementById('scannerLoading').style.display = 'block';
+
+  try {
+    const data = await apiFetch('/fno/scan?top_n=15');
+    document.getElementById('scannerLoading').style.display = 'none';
+    document.getElementById('scannerTable').style.display = 'block';
+
+    document.getElementById('strongSells').textContent = data.strong_sell_count || 0;
+
+    const body = document.getElementById('scannerBody');
+    body.innerHTML = data.results.map((r, i) => {
+      const scoreColor = r.score >= 60 ? 'var(--red)' : r.score >= 40 ? 'var(--orange)' : r.score >= 25 ? '#ffeb3b' : 'var(--muted)';
+      const actionClass = r.action === 'STRONG SELL' ? 'action-strong-sell' : r.action === 'SELL' ? 'action-sell' : r.action === 'WEAK SELL' ? 'action-weak-sell' : 'action-hold';
+      return `
+        <tr>
+          <td>${i + 1}</td>
+          <td><strong>${r.symbol}</strong></td>
+          <td>
+            <div class="score-bar"><div class="score-bar-fill" style="width:${r.score}%;background:${scoreColor}"></div></div>
+            <span style="color:${scoreColor}">${r.score}</span>
+          </td>
+          <td class="${actionClass}">${r.action}</td>
+          <td>${r.price.toFixed(2)}</td>
+          <td style="color:${r.rsi > 70 ? 'var(--red)' : r.rsi < 30 ? 'var(--green)' : 'var(--text)'}">${r.rsi.toFixed(1)}</td>
+          <td style="color:${r.macd_hist < 0 ? 'var(--red)' : 'var(--green)'}">${r.macd_hist.toFixed(4)}</td>
+          <td>${r.bb_pct.toFixed(2)}</td>
+          <td style="color:${r.return_1d_pct < 0 ? 'var(--red)' : 'var(--green)'}">${r.return_1d_pct.toFixed(2)}%</td>
+          <td>${r.volatility.toFixed(3)}</td>
+          <td class="reasons">${(r.reasons || []).map(x => '<span class="reason-tag">' + x + '</span>').join(' ')}</td>
+        </tr>`;
+    }).join('');
+
+    document.getElementById('scanSummary').textContent =
+      `Scanned ${data.scanned} F&O symbols | ${data.strong_sell_count} STRONG SELL | ${data.sell_count} SELL | Mode: ${data.mode.toUpperCase()}`;
+
+    toast(`Scan complete: ${data.strong_sell_count} strong sells found`, 'info');
+  } catch (e) {
+    document.getElementById('scannerLoading').style.display = 'none';
+    document.getElementById('scannerEmpty').style.display = 'block';
+    toast('Scan failed: ' + e.message, 'error');
+  }
+}
+
+// ---- Auto-Trade Toggle ----
+async function toggleAutoTrade() {
+  try {
+    if (autoTrading) {
+      await apiFetch('/live/disable', { method: 'POST' });
+      toast('Auto-trading disabled', 'info');
+    } else {
+      await apiFetch('/live/enable', {
+        method: 'POST',
+        body: JSON.stringify({ model_type: 'rf', model_version: 'v1', enabled: true })
+      });
+      toast('Auto-trading enabled', 'success');
+    }
+    refreshStatus();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ---- Kite Connect ----
+async function connectKite() {
+  try {
+    toast('Connecting to Kite...', 'info');
+    const resp = await apiFetch('/kite/auto-login', { method: 'POST' });
+    if (resp.status === 'ok' || resp.access_token) {
+      toast('Kite connected!', 'success');
+    } else {
+      toast('Kite: ' + (resp.detail || resp.message || JSON.stringify(resp)), 'error');
+    }
+    refreshStatus();
+  } catch (e) {
+    toast('Kite connection failed: ' + e.message, 'error');
+  }
+}
+
+// ---- Tabs ----
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// ---- Toast ----
+function toast(msg, type) {
+  const area = document.getElementById('toastArea');
+  const el = document.createElement('div');
+  el.className = 'toast toast-' + (type || 'info');
+  el.textContent = msg;
+  area.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ---- Auto Refresh ----
+function startAutoRefresh() {
+  if (refreshInterval) clearInterval(refreshInterval);
+  refreshInterval = setInterval(refreshStatus, 30000);
+}
+
+// ---- Init ----
+window.addEventListener('DOMContentLoaded', () => {
+  if (token) {
+    document.getElementById('loginOverlay').style.display = 'none';
+    refreshStatus();
+    startAutoRefresh();
+  }
+});
+</script>
+</body>
+</html>

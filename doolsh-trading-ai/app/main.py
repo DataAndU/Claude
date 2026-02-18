@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import admin, auth, kite, live, orders, strategies, trading
+from app.api import fno
 from app.core.config import get_settings
 from app.core.database import init_db
 from app.core.logging import setup_logging
@@ -15,6 +19,8 @@ from app.core.redis import close_redis
 from app.services.scheduler import start_scheduler, stop_scheduler
 
 settings = get_settings()
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -34,7 +40,7 @@ app = FastAPI(
         "Runs on Userland / Android. "
         "For educational purposes only. Not financial advice."
     ),
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -54,6 +60,11 @@ app.include_router(orders.router, prefix=PREFIX)
 app.include_router(live.router, prefix=PREFIX)
 app.include_router(strategies.router, prefix=PREFIX)
 app.include_router(admin.router, prefix=PREFIX)
+app.include_router(fno.router, prefix=PREFIX)
+
+# Serve static files (CSS/JS if we ever split them out)
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/health")
@@ -68,3 +79,12 @@ async def health():
         "market_open": is_market_open(),
         "auto_trading": is_auto_trading_enabled(),
     }
+
+
+@app.get("/")
+async def dashboard():
+    """Serve the main HTML dashboard."""
+    html_file = STATIC_DIR / "index.html"
+    if html_file.exists():
+        return FileResponse(str(html_file), media_type="text/html")
+    return {"message": "Dashboard not found. Place index.html in app/static/"}

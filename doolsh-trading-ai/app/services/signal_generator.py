@@ -9,8 +9,12 @@ import numpy as np
 import pandas as pd
 
 from ml.features.engineering import build_features
-from ml.training.lstm_model import predict_lstm
 from ml.training.random_forest import FEATURE_COLS, predict_rf
+
+try:
+    from ml.training.lstm_model import predict_lstm
+except ImportError:
+    predict_lstm = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 

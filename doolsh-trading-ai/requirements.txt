@@ -33,7 +33,7 @@ torch>=2.1.0
 # Security
 PyJWT==2.10.1
 passlib[bcrypt]==1.7.4
-bcrypt==4.2.1
+bcrypt>=4.0,<5
 
 # Testing
 pytest==8.3.4
