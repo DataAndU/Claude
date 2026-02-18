@@ -42,7 +42,7 @@ def create_access_token(
 
 def create_refresh_token(subject: str) -> str:
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(days=settings.jwt_refresh_token_expire_days)
+    expire = now + timedelta(days=7)
     payload = {"sub": subject, "exp": expire, "iat": now, "type": "refresh"}
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 

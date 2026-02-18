@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 # ---- Training ----
 class TrainRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=20, examples=["AAPL"])
+    symbol: str = Field(..., min_length=1, max_length=20, examples=["RELIANCE"])
     model_type: str = Field("rf", pattern="^(rf|lstm)$")
     horizon: int = Field(5, ge=1, le=60)
     version: str = "v1"
@@ -85,7 +85,6 @@ class BacktestResponse(BaseModel):
     trades: List[Dict[str, Any]]
 
 
-# ---- Metrics ----
 class ModelMetricsResponse(BaseModel):
     models: List[Dict[str, Any]]
 
@@ -105,3 +104,30 @@ class StrategyOut(BaseModel):
     user_id: int
 
     model_config = {"from_attributes": True}
+
+
+# ---- Orders ----
+class PlaceOrderRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20)
+    side: str = Field(..., pattern="^(BUY|SELL)$")
+    quantity: int = Field(..., ge=1)
+    order_type: str = Field("MARKET", pattern="^(MARKET|LIMIT|SL|SL-M)$")
+    price: float = 0.0
+    trigger_price: float = 0.0
+    product: Optional[str] = None
+
+
+class OrderOut(BaseModel):
+    order_id: str
+    status: str
+    symbol: str
+    side: str
+    quantity: int
+    mode: str = "paper"
+
+
+# ---- Auto-Trade ----
+class AutoTradeConfig(BaseModel):
+    model_type: str = Field("rf", pattern="^(rf|lstm|ensemble)$")
+    model_version: str = "v1"
+    enabled: bool = True

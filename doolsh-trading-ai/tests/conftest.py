@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the Doolsh Trading AI test suite."""
+"""Shared pytest fixtures."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import Base, engine
 from app.main import app
 
 

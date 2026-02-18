@@ -1,4 +1,4 @@
-"""Smoke test for the health endpoint (no DB required)."""
+"""Smoke test for the health endpoint."""
 
 from __future__ import annotations
 
@@ -17,4 +17,5 @@ async def test_health_endpoint():
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
-        assert "app" in body
+        assert "mode" in body
+        assert "kite_connected" in body

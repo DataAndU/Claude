@@ -57,7 +57,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Account disabled")
 
     return TokenResponse(
-        access_token=create_access_token(str(user.id), extra={"role": user.role.value}),
+        access_token=create_access_token(str(user.id), extra={"role": user.role}),
         refresh_token=create_refresh_token(str(user.id)),
     )
 
@@ -81,7 +81,7 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="User not found or inactive")
 
     return TokenResponse(
-        access_token=create_access_token(str(user.id), extra={"role": user.role.value}),
+        access_token=create_access_token(str(user.id), extra={"role": user.role}),
         refresh_token=create_refresh_token(str(user.id)),
     )
 

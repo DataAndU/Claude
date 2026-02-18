@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -15,7 +14,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.redis import get_redis
 from app.core.security import decode_token
-from app.models.user import ApiKey, User, UserRole
+from app.models.user import User, UserRole
 
 settings = get_settings()
 bearer_scheme = HTTPBearer()
@@ -45,29 +44,19 @@ async def get_current_user(
 
 
 def require_role(*roles: UserRole):
-    """Return a dependency that enforces one of the specified roles."""
-
     async def _check(user: User = Depends(get_current_user)) -> User:
         if user.role not in roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role {user.role.value} not permitted",
-            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Role {user.role.value} not permitted")
         return user
-
     return _check
 
 
 async def rate_limit(request: Request) -> None:
-    """Simple sliding-window rate limiter backed by Redis."""
-    redis = await get_redis()
+    cache = await get_redis()
     client_ip = request.client.host if request.client else "unknown"
-    key = f"ratelimit:{client_ip}:{int(time.time()) // 60}"
-    count = await redis.incr(key)
+    key = f"rl:{client_ip}:{int(time.time()) // 60}"
+    count = await cache.incr(key)
     if count == 1:
-        await redis.expire(key, 60)
-    if count > settings.rate_limit_per_minute:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded",
-        )
+        await cache.expire(key, 60)
+    if count > 60:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")

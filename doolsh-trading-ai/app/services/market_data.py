@@ -1,127 +1,140 @@
-"""Market data fetching service (Alpha Vantage integration)."""
+"""Market data service — Zerodha Kite historical + live data.
+
+Replaces the old Alpha Vantage integration. Uses Kite Connect's
+historical data API for OHLCV candles and the ticker for live quotes.
+Falls back to in-memory cache (no Redis needed).
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import httpx
 import pandas as pd
 
 from app.core.config import get_settings
+from app.core.kite import get_kite, is_logged_in
 from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-ALPHA_VANTAGE_BASE = "https://www.alphavantage.co/query"
+# NSE instrument token cache (loaded once)
+_instrument_cache: dict[str, int] = {}
+
+
+async def _load_instruments() -> None:
+    """Cache NSE instrument tokens from Kite."""
+    global _instrument_cache
+    if _instrument_cache:
+        return
+    kite = get_kite()
+    instruments = kite.instruments(settings.trading_exchange)
+    _instrument_cache = {i["tradingsymbol"]: i["instrument_token"] for i in instruments}
+    logger.info("Loaded %d %s instruments", len(_instrument_cache), settings.trading_exchange)
+
+
+def get_instrument_token(symbol: str) -> int:
+    token = _instrument_cache.get(symbol)
+    if token is None:
+        raise ValueError(f"Instrument not found: {symbol} on {settings.trading_exchange}")
+    return token
 
 
 async def fetch_daily_prices(
     symbol: str,
-    outputsize: str = "full",
+    days: int = 365,
     use_cache: bool = True,
 ) -> pd.DataFrame:
-    """Fetch daily OHLCV data from Alpha Vantage, with Redis caching."""
-    cache_key = f"market:daily:{symbol}:{outputsize}"
+    """Fetch daily OHLCV candles from Kite historical data API."""
+    cache_key = f"kite:daily:{symbol}:{days}"
+    cache = await get_redis()
 
     if use_cache:
-        redis = await get_redis()
-        cached = await redis.get(cache_key)
+        cached = await cache.get(cache_key)
         if cached:
-            logger.debug("Cache hit for %s", cache_key)
-            data = json.loads(cached)
-            return pd.DataFrame(data)
+            return pd.DataFrame(json.loads(cached))
 
-    params = {
-        "function": "TIME_SERIES_DAILY",
-        "symbol": symbol,
-        "outputsize": outputsize,
-        "apikey": settings.alpha_vantage_api_key,
-        "datatype": "json",
-    }
+    if not is_logged_in():
+        raise RuntimeError("Kite not logged in. Call /api/v1/kite/auto-login first.")
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(ALPHA_VANTAGE_BASE, params=params)
-        resp.raise_for_status()
-        payload = resp.json()
+    await _load_instruments()
+    token = get_instrument_token(symbol)
+    kite = get_kite()
 
-    ts_key = "Time Series (Daily)"
-    if ts_key not in payload:
-        error_msg = payload.get("Note") or payload.get("Error Message") or str(payload)
-        raise ValueError(f"Alpha Vantage error for {symbol}: {error_msg}")
+    to_date = datetime.now(timezone.utc)
+    from_date = to_date - timedelta(days=days)
 
-    records = []
-    for date_str, ohlcv in payload[ts_key].items():
-        records.append(
-            {
-                "date": date_str,
-                "open": float(ohlcv["1. open"]),
-                "high": float(ohlcv["2. high"]),
-                "low": float(ohlcv["3. low"]),
-                "close": float(ohlcv["4. close"]),
-                "volume": int(ohlcv["5. volume"]),
-            }
-        )
+    candles = kite.historical_data(
+        instrument_token=token,
+        from_date=from_date.strftime("%Y-%m-%d"),
+        to_date=to_date.strftime("%Y-%m-%d"),
+        interval="day",
+    )
 
-    df = pd.DataFrame(records)
+    df = pd.DataFrame(candles)
+    if df.empty:
+        raise ValueError(f"No data returned for {symbol}")
+
+    df.rename(columns={"date": "date"}, inplace=True)
     df["date"] = pd.to_datetime(df["date"])
     df.sort_values("date", inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    if use_cache:
-        redis = await get_redis()
-        await redis.setex(
-            cache_key,
-            settings.data_cache_ttl_seconds,
-            df.to_json(orient="records", date_format="iso"),
-        )
-
+    await cache.setex(cache_key, 300, df.to_json(orient="records", date_format="iso"))
     return df
 
 
 async def fetch_intraday_prices(
     symbol: str,
-    interval: str = "15min",
-    outputsize: str = "full",
+    interval: str = "15minute",
+    days: int = 5,
 ) -> pd.DataFrame:
-    """Fetch intraday OHLCV data from Alpha Vantage."""
-    params = {
-        "function": "TIME_SERIES_INTRADAY",
-        "symbol": symbol,
-        "interval": interval,
-        "outputsize": outputsize,
-        "apikey": settings.alpha_vantage_api_key,
-        "datatype": "json",
-    }
+    """Fetch intraday OHLCV candles from Kite."""
+    if not is_logged_in():
+        raise RuntimeError("Kite not logged in.")
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(ALPHA_VANTAGE_BASE, params=params)
-        resp.raise_for_status()
-        payload = resp.json()
+    await _load_instruments()
+    token = get_instrument_token(symbol)
+    kite = get_kite()
 
-    ts_key = f"Time Series ({interval})"
-    if ts_key not in payload:
-        error_msg = payload.get("Note") or payload.get("Error Message") or str(payload)
-        raise ValueError(f"Alpha Vantage error for {symbol}: {error_msg}")
+    to_date = datetime.now(timezone.utc)
+    from_date = to_date - timedelta(days=days)
 
-    records = []
-    for dt_str, ohlcv in payload[ts_key].items():
-        records.append(
-            {
-                "datetime": dt_str,
-                "open": float(ohlcv["1. open"]),
-                "high": float(ohlcv["2. high"]),
-                "low": float(ohlcv["3. low"]),
-                "close": float(ohlcv["4. close"]),
-                "volume": int(ohlcv["5. volume"]),
-            }
-        )
+    candles = kite.historical_data(
+        instrument_token=token,
+        from_date=from_date.strftime("%Y-%m-%d %H:%M:%S"),
+        to_date=to_date.strftime("%Y-%m-%d %H:%M:%S"),
+        interval=interval,
+    )
 
-    df = pd.DataFrame(records)
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df.sort_values("datetime", inplace=True)
+    df = pd.DataFrame(candles)
+    df["date"] = pd.to_datetime(df["date"])
+    df.sort_values("date", inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
+
+
+async def get_live_quote(symbol: str) -> dict:
+    """Get the latest live quote via Kite."""
+    if not is_logged_in():
+        raise RuntimeError("Kite not logged in.")
+    kite = get_kite()
+    key = f"{settings.trading_exchange}:{symbol}"
+    quotes = kite.quote([key])
+    return quotes.get(key, {})
+
+
+async def get_ltp(symbols: list[str]) -> dict[str, float]:
+    """Get last traded price for multiple symbols."""
+    if not is_logged_in():
+        raise RuntimeError("Kite not logged in.")
+    kite = get_kite()
+    keys = [f"{settings.trading_exchange}:{s}" for s in symbols]
+    data = kite.ltp(keys)
+    return {
+        s: data.get(f"{settings.trading_exchange}:{s}", {}).get("last_price", 0.0)
+        for s in symbols
+    }

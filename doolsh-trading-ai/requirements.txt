@@ -4,39 +4,40 @@ uvicorn[standard]==0.34.0
 pydantic[email]==2.10.4
 pydantic-settings==2.7.1
 
-# Database
+# Database (SQLite — no external DB)
 sqlalchemy[asyncio]==2.0.36
-asyncpg==0.30.0
-alembic==1.14.1
+aiosqlite==0.20.0
 
-# Redis
-redis[hiredis]==5.2.1
+# Zerodha Kite Connect
+kiteconnect==5.0.1
 
-# Celery
-celery[redis]==5.4.0
+# TOTP auto-login
+pyotp==2.9.0
 
 # HTTP client
 httpx==0.28.1
+
+# Scheduling (replaces Celery)
+APScheduler==3.10.4
 
 # Data / ML
 pandas==2.2.3
 numpy==1.26.4
 scikit-learn==1.6.1
-torch==2.5.1
 joblib==1.4.2
+
+# PyTorch — use CPU-only on Userland/ARM
+# Install via: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.1.0
 
 # Security
 PyJWT==2.10.1
 passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
 
-# Rate limiting
-slowapi==0.1.9
-
 # Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0
-httpx==0.28.1
 
 # Linting (dev)
 ruff==0.8.6

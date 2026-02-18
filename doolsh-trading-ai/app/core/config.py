@@ -1,4 +1,8 @@
-"""Application configuration loaded from environment variables."""
+"""Application configuration for Zerodha Kite + Userland environment.
+
+Uses SQLite (no external DB), in-memory caching (no Redis),
+and APScheduler (no Celery). Designed to run on minimal ARM hardware.
+"""
 
 from __future__ import annotations
 
@@ -23,63 +27,69 @@ class Settings(BaseSettings):
     debug: bool = False
     secret_key: str = "change-me-to-a-random-64-char-string"
     api_version: str = "v1"
+    base_dir: str = str(Path(__file__).resolve().parent.parent.parent)
 
-    # ---- Database ----
-    postgres_host: str = "db"
-    postgres_port: int = 5432
-    postgres_user: str = "doolsh"
-    postgres_password: str = "change-me"
-    postgres_db: str = "doolsh_trading"
+    # ---- Database (SQLite — zero config) ----
+    db_path: str = "data/doolsh.db"
 
     @property
     def database_url(self) -> str:
-        return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return f"sqlite+aiosqlite:///{self.base_dir}/{self.db_path}"
 
     @property
     def database_url_sync(self) -> str:
-        return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return f"sqlite:///{self.base_dir}/{self.db_path}"
 
-    # ---- Redis ----
-    redis_host: str = "redis"
-    redis_port: int = 6379
-    redis_db: int = 0
+    # ---- Zerodha Kite Connect ----
+    kite_api_key: str = ""
+    kite_api_secret: str = ""
+    kite_user_id: str = ""
+    kite_password: str = ""
+    kite_totp_secret: str = ""       # Base32 TOTP secret for auto-login
+    kite_access_token: str = ""       # Populated at runtime after login
+    kite_request_token: str = ""      # Populated during OAuth callback
+
+    # ---- Trading ----
+    trading_mode: str = "paper"       # "paper" or "live"
+    trading_exchange: str = "NSE"
+    trading_product: str = "MIS"      # MIS (intraday) / CNC (delivery) / NRML
+    default_quantity: int = 1
+    watchlist: str = '["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BAJFINANCE","ITC","HINDUNILVR","KOTAKBANK"]'
+    market_open_hour: int = 9
+    market_open_minute: int = 15
+    market_close_hour: int = 15
+    market_close_minute: int = 15
+    auto_square_off_minute: int = 10  # minutes before close
 
     @property
-    def redis_url(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+    def watchlist_symbols(self) -> List[str]:
+        return json.loads(self.watchlist)
 
-    # ---- Celery ----
-    celery_broker_url: str = "redis://redis:6379/1"
-    celery_result_backend: str = "redis://redis:6379/2"
+    # ---- Risk Management ----
+    max_daily_loss: float = 5000.0           # INR
+    max_position_value: float = 100000.0     # INR per position
+    max_open_positions: int = 5
+    stop_loss_pct: float = 0.02              # 2 %
+    take_profit_pct: float = 0.04            # 4 %
+    max_trade_count_per_day: int = 20
+    min_confidence_threshold: float = 0.65
 
     # ---- JWT ----
     jwt_secret_key: str = "change-me-jwt-secret"
     jwt_algorithm: str = "HS256"
-    jwt_access_token_expire_minutes: int = 30
-    jwt_refresh_token_expire_days: int = 7
-
-    # ---- Market Data ----
-    alpha_vantage_api_key: str = "demo"
-    data_cache_ttl_seconds: int = 300
+    jwt_access_token_expire_minutes: int = 720  # 12 h for bot sessions
 
     # ---- ML ----
     model_save_dir: str = "ml/saved_models"
     default_train_test_split: float = 0.8
     cross_validation_folds: int = 5
 
-    # ---- Rate Limiting ----
-    rate_limit_per_minute: int = 60
-    rate_limit_per_hour: int = 1000
+    # ---- Scheduler ----
+    scheduler_interval_seconds: int = 60  # main loop tick
 
     # ---- Logging ----
     log_level: str = "INFO"
-    log_format: str = "json"
+    log_format: str = "text"  # text is friendlier on Userland terminal
 
     # ---- CORS ----
     cors_origins: str = '["http://localhost:3000","http://localhost:8000"]'

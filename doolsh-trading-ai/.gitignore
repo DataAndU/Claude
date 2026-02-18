@@ -22,6 +22,11 @@ env/
 .env.local
 .env.production
 
+# Database
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
 # ML artifacts
 ml/saved_models/*.pkl
 ml/saved_models/*.pt
@@ -31,9 +36,6 @@ ml/saved_models/*.h5
 data/*.csv
 data/*.parquet
 
-# Docker
-.docker/
-
 # OS
 .DS_Store
 Thumbs.db
@@ -42,7 +44,3 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
-
-# Celery
-celerybeat-schedule
-celerybeat-schedule.db

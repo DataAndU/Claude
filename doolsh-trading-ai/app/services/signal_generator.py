@@ -1,9 +1,8 @@
-"""Signal generation service that combines ML predictions with risk scoring."""
+"""Signal generation service — combines ML predictions with risk scoring."""
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -26,21 +25,6 @@ def generate_signals(
     rf_path: str | None = None,
     lstm_path: str | None = None,
 ) -> List[Dict]:
-    """Generate trading signals from a feature-enriched DataFrame.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Raw OHLCV data.  Features will be computed internally.
-    model_path : str
-        Path to the primary model file.
-    model_type : str
-        "rf" or "lstm".
-    ensemble : bool
-        If True, average predictions from both RF and LSTM.
-    rf_path / lstm_path : str | None
-        Override paths when using ensemble mode.
-    """
     featured = build_features(df)
     if featured.empty:
         return []
@@ -51,7 +35,6 @@ def generate_signals(
         min_len = min(len(rf_preds), len(lstm_preds))
         rf_preds = rf_preds[-min_len:]
         lstm_preds = lstm_preds[-min_len:]
-        # Majority vote
         combined = np.round((rf_preds + lstm_preds) / 2).astype(int)
         featured = featured.iloc[-min_len:].reset_index(drop=True)
         preds = combined
@@ -65,23 +48,19 @@ def generate_signals(
     for idx, pred in enumerate(preds):
         row = featured.iloc[idx]
         confidence = _compute_confidence(row, int(pred))
-        signals.append(
-            {
-                "index": idx,
-                "signal": LABEL_MAP.get(int(pred), "HOLD"),
-                "confidence": round(float(confidence), 4),
-                "price": round(float(row["close"]), 4) if "close" in row.index else 0.0,
-                "risk_score": round(float(row.get("risk_score", 0.5)), 4),
-                "rsi": round(float(row.get("rsi", 50)), 2),
-                "macd_hist": round(float(row.get("macd_hist", 0)), 6),
-            }
-        )
-
+        signals.append({
+            "index": idx,
+            "signal": LABEL_MAP.get(int(pred), "HOLD"),
+            "confidence": round(float(confidence), 4),
+            "price": round(float(row["close"]), 4) if "close" in row.index else 0.0,
+            "risk_score": round(float(row.get("risk_score", 0.5)), 4),
+            "rsi": round(float(row.get("rsi", 50)), 2),
+            "macd_hist": round(float(row.get("macd_hist", 0)), 6),
+        })
     return signals
 
 
 def _compute_confidence(row: pd.Series, pred: int) -> float:
-    """Heuristic confidence based on indicator alignment with the prediction."""
     score = 0.5
     rsi = row.get("rsi", 50)
     macd_hist = row.get("macd_hist", 0)
@@ -96,7 +75,7 @@ def _compute_confidence(row: pd.Series, pred: int) -> float:
             score += 0.15
         if macd_hist < 0:
             score += 0.15
-    else:  # HOLD
+    else:
         if 40 <= rsi <= 60:
             score += 0.1
         if abs(macd_hist) < 0.01:

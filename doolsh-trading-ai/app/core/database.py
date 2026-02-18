@@ -1,7 +1,10 @@
-"""Async SQLAlchemy database engine and session management."""
+"""Async SQLAlchemy engine — SQLite backend for Userland / Android."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from sqlalchemy import JSON, event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -9,13 +12,24 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+# Ensure data directory exists
+Path(settings.base_dir, "data").mkdir(parents=True, exist_ok=True)
+
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
-    pool_size=20,
-    max_overflow=10,
-    pool_pre_ping=True,
+    connect_args={"check_same_thread": False},
 )
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragma(dbapi_conn, connection_record):
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
+
 
 async_session_factory = async_sessionmaker(
     engine,
@@ -25,7 +39,8 @@ async_session_factory = async_sessionmaker(
 
 
 class Base(DeclarativeBase):
-    pass
+    # Map Python dict to JSON column (SQLite-compatible)
+    type_annotation_map = {dict: JSON}
 
 
 async def get_db() -> AsyncSession:
@@ -42,6 +57,6 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db() -> None:
-    """Create all tables. Called once at application startup."""
+    """Create all tables at startup."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

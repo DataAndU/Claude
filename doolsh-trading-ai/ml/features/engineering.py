@@ -10,11 +10,7 @@ import numpy as np
 import pandas as pd
 
 
-def add_moving_averages(
-    df: pd.DataFrame,
-    windows: list[int] | None = None,
-    col: str = "close",
-) -> pd.DataFrame:
+def add_moving_averages(df: pd.DataFrame, windows: list[int] | None = None, col: str = "close") -> pd.DataFrame:
     windows = windows or [5, 10, 20, 50, 200]
     for w in windows:
         df[f"sma_{w}"] = df[col].rolling(window=w).mean()
@@ -33,13 +29,7 @@ def add_rsi(df: pd.DataFrame, period: int = 14, col: str = "close") -> pd.DataFr
     return df
 
 
-def add_macd(
-    df: pd.DataFrame,
-    fast: int = 12,
-    slow: int = 26,
-    signal: int = 9,
-    col: str = "close",
-) -> pd.DataFrame:
+def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9, col: str = "close") -> pd.DataFrame:
     ema_fast = df[col].ewm(span=fast, adjust=False).mean()
     ema_slow = df[col].ewm(span=slow, adjust=False).mean()
     df["macd"] = ema_fast - ema_slow
@@ -48,9 +38,7 @@ def add_macd(
     return df
 
 
-def add_bollinger_bands(
-    df: pd.DataFrame, period: int = 20, std_dev: float = 2.0, col: str = "close"
-) -> pd.DataFrame:
+def add_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0, col: str = "close") -> pd.DataFrame:
     sma = df[col].rolling(window=period).mean()
     rolling_std = df[col].rolling(window=period).std()
     df["bb_upper"] = sma + std_dev * rolling_std
@@ -88,7 +76,6 @@ def add_volatility(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
 
 
 def compute_risk_score(df: pd.DataFrame) -> pd.DataFrame:
-    """Composite risk score in [0, 1] from RSI, volatility, and BB position."""
     rsi_norm = df["rsi"].clip(0, 100) / 100.0
     vol_norm = df["volatility"].rank(pct=True)
     bb_risk = (1 - df["bb_pct"].clip(0, 1)).fillna(0.5)
@@ -97,7 +84,6 @@ def compute_risk_score(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Run all feature engineering steps and drop NaN rows."""
     df = df.copy()
     df = add_moving_averages(df)
     df = add_rsi(df)

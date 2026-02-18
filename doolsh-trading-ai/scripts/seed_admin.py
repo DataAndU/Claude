@@ -1,4 +1,4 @@
-"""Seed an admin user into the database.
+"""Seed an admin user into the SQLite database.
 
 Usage:
     python -m scripts.seed_admin
@@ -10,7 +10,6 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Ensure project root is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
@@ -33,7 +32,7 @@ async def main() -> None:
             email="admin@doolsh.local",
             username="admin",
             hashed_password=hash_password("Admin@12345"),
-            role=UserRole.ADMIN,
+            role=UserRole.ADMIN.value,
         )
         session.add(admin)
         await session.commit()
