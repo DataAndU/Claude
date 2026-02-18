@@ -1,7 +1,7 @@
-"""Feature engineering engine — computes technical indicators and regime features.
+"""Feature engineering engine for Indian equity/F&O markets.
 
-Uses the `ta` library for standard indicators and custom implementations
-for regime detection and advanced features. All vectorized with pandas.
+Computes 30+ technical indicators, regime features, and volume analysis.
+All vectorized with pandas. Works with OHLCV data from Kite or yfinance.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Core Indicators ─────────────────────────────────────────────────────────
-
 
 def add_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     if HAS_TA:
@@ -88,6 +87,7 @@ def add_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
         df["adx"] = adx_ind.adx()
         df["plus_di"] = adx_ind.adx_pos()
         df["minus_di"] = adx_ind.adx_neg()
+        df["di_crossover"] = df["plus_di"] - df["minus_di"]
     return df
 
 
@@ -118,8 +118,30 @@ def add_obv(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ─── Moving Averages ──────────────────────────────────────────────────────────
+# ─── Volume Analysis ────────────────────────────────────────────────────────
 
+def add_volume_features(df: pd.DataFrame) -> pd.DataFrame:
+    if "volume" not in df.columns:
+        return df
+
+    # Volume ratio (current vs 20-day average)
+    vol_avg = df["volume"].rolling(20).mean()
+    df["volume_ratio"] = df["volume"] / vol_avg.replace(0, np.nan)
+
+    # Volume-price trend
+    df["vol_price_trend"] = (
+        df["close"].pct_change() * df["volume_ratio"]
+    ).rolling(5).mean()
+
+    # VWAP approximation (daily)
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    df["vwap"] = (typical_price * df["volume"]).cumsum() / df["volume"].cumsum()
+    df["vwap_deviation"] = (df["close"] - df["vwap"]) / df["vwap"].replace(0, np.nan)
+
+    return df
+
+
+# ─── Moving Averages ────────────────────────────────────────────────────────
 
 def add_moving_averages(df: pd.DataFrame, windows: Optional[List[int]] = None) -> pd.DataFrame:
     windows = windows or [5, 10, 20, 50]
@@ -129,8 +151,7 @@ def add_moving_averages(df: pd.DataFrame, windows: Optional[List[int]] = None) -
     return df
 
 
-# ─── Returns & Volatility ────────────────────────────────────────────────────
-
+# ─── Returns & Volatility ──────────────────────────────────────────────────
 
 def add_returns(df: pd.DataFrame) -> pd.DataFrame:
     df["return_1"] = df["close"].pct_change()
@@ -142,15 +163,79 @@ def add_returns(df: pd.DataFrame) -> pd.DataFrame:
 def add_volatility(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     if "log_return" not in df.columns:
         df = add_returns(df)
-    df["volatility"] = df["log_return"].rolling(window).std() * np.sqrt(365 * 24)  # annualized
+    df["volatility"] = df["log_return"].rolling(window).std() * np.sqrt(252)  # annualized for equities
     return df
 
 
-# ─── Regime Detection ────────────────────────────────────────────────────────
+# ─── Ichimoku Cloud ─────────────────────────────────────────────────────────
 
+def add_ichimoku(df: pd.DataFrame) -> pd.DataFrame:
+    if not {"high", "low", "close"}.issubset(df.columns):
+        return df
+
+    # Tenkan-sen (9-period)
+    high_9 = df["high"].rolling(9).max()
+    low_9 = df["low"].rolling(9).min()
+    df["ichimoku_tenkan"] = (high_9 + low_9) / 2
+
+    # Kijun-sen (26-period)
+    high_26 = df["high"].rolling(26).max()
+    low_26 = df["low"].rolling(26).min()
+    df["ichimoku_kijun"] = (high_26 + low_26) / 2
+
+    # Senkou Span A
+    df["ichimoku_senkou_a"] = ((df["ichimoku_tenkan"] + df["ichimoku_kijun"]) / 2).shift(26)
+
+    # Senkou Span B
+    high_52 = df["high"].rolling(52).max()
+    low_52 = df["low"].rolling(52).min()
+    df["ichimoku_senkou_b"] = ((high_52 + low_52) / 2).shift(26)
+
+    # Cloud signals
+    df["ichimoku_above_cloud"] = (
+        (df["close"] > df["ichimoku_senkou_a"]) &
+        (df["close"] > df["ichimoku_senkou_b"])
+    ).astype(int)
+    df["ichimoku_below_cloud"] = (
+        (df["close"] < df["ichimoku_senkou_a"]) &
+        (df["close"] < df["ichimoku_senkou_b"])
+    ).astype(int)
+
+    return df
+
+
+# ─── Candlestick Patterns ──────────────────────────────────────────────────
+
+def add_candlestick_patterns(df: pd.DataFrame) -> pd.DataFrame:
+    if not {"open", "high", "low", "close"}.issubset(df.columns):
+        return df
+
+    body = df["close"] - df["open"]
+    body_abs = body.abs()
+    high_low_range = df["high"] - df["low"]
+
+    # Engulfing pattern
+    prev_body = body.shift(1)
+    bullish_engulf = (body > 0) & (prev_body < 0) & (body_abs > prev_body.abs())
+    bearish_engulf = (body < 0) & (prev_body > 0) & (body_abs > prev_body.abs())
+    df["engulfing_score"] = bullish_engulf.astype(int) - bearish_engulf.astype(int)
+
+    # Doji
+    df["is_doji"] = (body_abs / high_low_range.replace(0, np.nan) < 0.1).astype(int)
+
+    # Hammer
+    lower_shadow = df[["open", "close"]].min(axis=1) - df["low"]
+    upper_shadow = df["high"] - df[["open", "close"]].max(axis=1)
+    df["is_hammer"] = (
+        (lower_shadow > 2 * body_abs) & (upper_shadow < body_abs * 0.5)
+    ).astype(int)
+
+    return df
+
+
+# ─── Regime Detection ──────────────────────────────────────────────────────
 
 def add_regime_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute volatility regime and trend strength features."""
     if "volatility" not in df.columns:
         df = add_volatility(df)
     if "adx" not in df.columns:
@@ -159,29 +244,24 @@ def add_regime_features(df: pd.DataFrame) -> pd.DataFrame:
     # Volatility regime percentile
     df["vol_regime"] = df["volatility"].rolling(60, min_periods=20).rank(pct=True)
 
-    # Trend strength
-    df["trend_strength"] = df.get("adx", pd.Series(25, index=df.index)).clip(0, 100) / 100.0
+    # Trend strength (ADX normalized)
+    adx = df.get("adx", pd.Series(25, index=df.index))
+    df["regime_trend_strength"] = adx.clip(0, 100) / 100.0
 
-    # Price momentum slope
+    # Price momentum
     df["momentum_20"] = df["close"].pct_change(20)
 
-    # Classify regime
-    def _classify(row):
-        vol = row.get("vol_regime", 0.5)
-        adx_val = row.get("adx", 25)
-        mom = row.get("momentum_20", 0)
-        if vol > 0.8:
-            return "high_vol"
-        if adx_val > 30:
-            return "trending_up" if mom > 0 else "trending_down"
-        return "ranging"
+    # Risk score (higher = riskier)
+    df["risk_score"] = (
+        df["vol_regime"].fillna(0.5) * 0.4 +
+        (1 - df["regime_trend_strength"].fillna(0.25)) * 0.3 +
+        df["volatility"].fillna(0.2).clip(0, 1) * 0.3
+    )
 
-    df["regime"] = df.apply(_classify, axis=1)
     return df
 
 
-# ─── Feature Builder ─────────────────────────────────────────────────────────
-
+# ─── Feature Columns ────────────────────────────────────────────────────────
 
 FEATURE_COLS = [
     "rsi", "macd", "macd_signal", "macd_hist",
@@ -189,12 +269,18 @@ FEATURE_COLS = [
     "sma_5", "sma_10", "sma_20", "sma_50",
     "ema_5", "ema_10", "ema_20",
     "return_1", "return_5", "volatility",
-    "adx", "stoch_rsi_k", "stoch_rsi_d",
-    "vol_regime", "trend_strength", "momentum_20",
+    "adx", "plus_di", "minus_di", "di_crossover",
+    "stoch_rsi_k", "stoch_rsi_d",
+    "obv", "volume_ratio", "vol_price_trend", "vwap_deviation",
+    "ichimoku_above_cloud", "ichimoku_below_cloud",
+    "engulfing_score", "is_doji", "is_hammer",
+    "vol_regime", "regime_trend_strength", "momentum_20", "risk_score",
 ]
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+# ─── Master Feature Builder ────────────────────────────────────────────────
+
+def build_features(df: pd.DataFrame, advanced: bool = True) -> pd.DataFrame:
     """Build all features from raw OHLCV data."""
     df = df.copy()
     df = add_moving_averages(df)
@@ -203,13 +289,23 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = add_bollinger_bands(df)
     df = add_returns(df)
     df = add_volatility(df)
+
     if {"high", "low", "close"}.issubset(df.columns):
         df = add_atr(df)
         df = add_adx(df)
+
     df = add_stochastic_rsi(df)
+
     if "volume" in df.columns:
         df = add_obv(df)
+        df = add_volume_features(df)
+
+    if advanced:
+        df = add_ichimoku(df)
+        df = add_candlestick_patterns(df)
+
     df = add_regime_features(df)
+
     df.dropna(inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df

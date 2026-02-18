@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# install.sh — One-time setup for AI Auto-Trading System
+# install.sh — One-time setup for KiteAI Auto-Trading System
 # Works on UserLAnd (Ubuntu on Android), Debian, Ubuntu
 
 set -e
 
 echo "============================================="
-echo " AI Auto-Trading System — Installer"
+echo " KiteAI — Zerodha AI Auto-Trader Installer"
 echo "============================================="
 
 cd "$(dirname "$0")/.."
@@ -40,30 +40,35 @@ pip install --upgrade pip --quiet
 echo "[+] Installing Python packages..."
 pip install -r requirements.txt --quiet 2>/dev/null || {
     echo "[!] Some packages failed. Installing core packages only..."
-    pip install ccxt pandas numpy ta scikit-learn fastapi uvicorn streamlit sqlalchemy pyyaml python-dotenv requests --quiet
+    pip install kiteconnect pyotp pandas numpy yfinance ta scikit-learn fastapi uvicorn streamlit sqlalchemy httpx pyyaml python-dotenv --quiet
     # Optional packages (may fail on ARM/low memory)
     pip install xgboost --quiet 2>/dev/null || echo "[!] XGBoost install failed (optional)"
     pip install apscheduler --quiet 2>/dev/null || echo "[!] APScheduler install failed (optional)"
-    pip install yfinance --quiet 2>/dev/null || echo "[!] yfinance install failed (optional)"
 }
 
 # Create directories
 echo "[+] Creating directories..."
-mkdir -p database/models
+mkdir -p data/models
+mkdir -p data/db
 mkdir -p config
 mkdir -p logs
 
-# Copy config template if not exists
-if [ ! -f "config/config.yaml" ]; then
-    echo "[+] Config template already exists"
+# Create .env from template if not exists
+if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+    echo "[+] Creating .env from template..."
+    cp .env.example .env
+    echo "[!] Edit .env with your Zerodha Kite credentials before running!"
 fi
 
 # Initialize database
 echo "[+] Initializing database..."
-$PY -c "from core.database import init_db; init_db()" 2>/dev/null || echo "[!] DB init deferred to first run"
+$PY -c "from core.database import get_engine; get_engine()" 2>/dev/null || echo "[!] DB init deferred to first run"
 
 echo ""
 echo "============================================="
 echo " Installation complete!"
-echo " Run: ./start.sh"
+echo ""
+echo " Next steps:"
+echo "   1. Edit .env with your Zerodha Kite credentials"
+echo "   2. Run: ./start.sh"
 echo "============================================="

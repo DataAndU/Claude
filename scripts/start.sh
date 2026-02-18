@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# start.sh (scripts/) — Launch API and Dashboard
+# start.sh (scripts/) — Launch KiteAI API and Dashboard
 # Called by root start.sh after setup
 
 set -e
@@ -9,7 +9,12 @@ ROOT="$(pwd)"
 
 source venv/bin/activate
 
-echo "[+] Starting AI Auto-Trading System..."
+# Load .env if present
+if [ -f ".env" ]; then
+    export $(grep -v '^#' .env | xargs)
+fi
+
+echo "[+] Starting KiteAI Auto-Trading System..."
 echo "    Mode: ${TRADING_MODE:-paper}"
 echo ""
 
@@ -34,7 +39,7 @@ echo "    Dashboard PID: $DASH_PID"
 
 echo ""
 echo "============================================="
-echo " System Running!"
+echo " KiteAI Running!"
 echo " API:       http://localhost:8000/docs"
 echo " Dashboard: http://localhost:8501"
 echo " Mode:      ${TRADING_MODE:-paper}"

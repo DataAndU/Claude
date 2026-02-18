@@ -1,508 +1,394 @@
-"""FastAPI backend — REST API for the AI auto-trading system.
+"""KiteAI — FastAPI REST backend for Zerodha AI Auto-Trading.
 
-Endpoints: system status, trading signals, model training,
-backtesting, risk management, data fetching.
+Endpoints for trading, signals, models, backtesting, risk, and Kite auth.
+Swagger UI: http://localhost:8000/docs
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from core.config import load_config
-from core.database import Signal, Trade, get_session, init_db
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Auto-Trading System", version="1.0.0")
+# Scheduler reference
+_scheduler = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize DB and scheduler on startup."""
+    from core.database import get_engine
+    get_engine()
+    logger.info("KiteAI API started")
+    yield
+    if _scheduler:
+        _scheduler.shutdown(wait=False)
+    logger.info("KiteAI API shutdown")
+
+
+app = FastAPI(
+    title="KiteAI",
+    description="Personal AI Auto-Trading Addon for Zerodha Kite",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ─── Pydantic Models ─────────────────────────────────────────────────────────
+# ─── Request/Response Models ────────────────────────────────────────────────
 
-
-class TrainRequest(BaseModel):
-    symbol: str = "BTC/USDT"
-    timeframe: str = "1h"
-    model_type: str = "random_forest"
-    limit: int = 500
-
-
-class BacktestRequest(BaseModel):
-    symbol: str = "BTC/USDT"
-    timeframe: str = "1h"
-    model_type: str = "random_forest"
-    initial_capital: float = 10000.0
-    limit: int = 500
+class LoginRequest(BaseModel):
+    method: str = "auto"  # auto, token
+    token: str = ""
 
 
 class SignalRequest(BaseModel):
-    symbol: str = "BTC/USDT"
-    timeframe: str = "1h"
+    symbol: str = "RELIANCE"
     model_type: str = "random_forest"
-    limit: int = 500
+    days: int = 180
 
 
-class ExecuteRequest(BaseModel):
-    symbol: str = "BTC/USDT"
-    side: str = "BUY"
-    confidence: float = 0.7
+class TrainRequest(BaseModel):
+    symbol: str = "RELIANCE"
     model_type: str = "random_forest"
+    days: int = 180
 
 
-class KillSwitchRequest(BaseModel):
-    enabled: bool
+class BacktestRequest(BaseModel):
+    symbol: str = "RELIANCE"
+    model_type: str = "random_forest"
+    days: int = 365
+    initial_capital: float = 100000
 
 
-# ─── Startup ──────────────────────────────────────────────────────────────────
+class TradeRequest(BaseModel):
+    symbol: str
+    side: str  # BUY or SELL
+    quantity: int = 1
+    order_type: str = "MARKET"
+    price: float = 0.0
+    product: str = "MIS"
+    exchange: str = "NSE"
 
 
-@app.on_event("startup")
-def startup():
-    cfg = load_config()
-    init_db(cfg.db_path)
-    logger.info("API started — mode=%s", cfg.mode)
-
-
-# ─── System ───────────────────────────────────────────────────────────────────
-
+# ─── System Endpoints ───────────────────────────────────────────────────────
 
 @app.get("/api/status")
-def get_status():
-    """System health and configuration overview."""
-    cfg = load_config()
-    from core.risk_engine import get_risk_summary
+async def get_status():
+    """System health and overview."""
+    from core.kite_auth import is_logged_in
+    from core.risk_engine import get_risk_analytics, get_risk_state
+    from core.auto_trader import is_auto_trading_enabled, get_cycle_count, get_current_regime
 
-    risk = get_risk_summary()
+    cfg = load_config()
+    state = get_risk_state()
     return {
         "status": "running",
         "mode": cfg.mode,
-        "exchange": cfg.exchange,
-        "symbols": cfg.symbols,
-        "primary_timeframe": cfg.primary_timeframe,
-        "kill_switch": cfg.kill_switch,
-        "risk": risk,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "kite_connected": is_logged_in(),
+        "auto_trading": is_auto_trading_enabled(),
+        "cycle_count": get_cycle_count(),
+        "regime": get_current_regime(),
+        "risk": {
+            "realized_pnl": state.realized_pnl,
+            "trade_count": state.trade_count,
+            "open_positions": len(state.open_positions),
+            "kill_switch": cfg.kill_switch,
+        },
+        "analytics": get_risk_analytics(),
     }
 
 
 @app.get("/api/config")
-def get_config():
-    """Return current configuration (non-sensitive)."""
-    cfg = load_config()
+async def get_config():
+    """Current configuration (no secrets)."""
+    return load_config().to_dict()
+
+
+# ─── Kite Auth Endpoints ────────────────────────────────────────────────────
+
+@app.get("/api/kite/status")
+async def kite_status():
+    from core.kite_auth import is_logged_in, get_login_url
     return {
-        "mode": cfg.mode,
-        "exchange": cfg.exchange,
-        "symbols": cfg.symbols,
-        "primary_timeframe": cfg.primary_timeframe,
-        "confirmation_timeframes": cfg.confirmation_timeframes,
-        "risk": {
-            "max_position_pct": cfg.max_position_pct,
-            "atr_sl_multiplier": cfg.atr_sl_multiplier,
-            "atr_tp_multiplier": cfg.atr_tp_multiplier,
-            "max_daily_loss_pct": cfg.max_daily_loss_pct,
-            "max_drawdown_pct": cfg.max_drawdown_pct,
-            "cooldown_minutes": cfg.cooldown_minutes,
-            "max_open_trades": cfg.max_open_trades,
-            "kill_switch": cfg.kill_switch,
-        },
-        "model": {
-            "primary": cfg.primary_model,
-            "fallback": cfg.fallback_model,
-            "min_confidence": cfg.min_confidence,
-        },
+        "logged_in": is_logged_in(),
+        "login_url": get_login_url(),
     }
 
 
-# ─── Data ─────────────────────────────────────────────────────────────────────
-
-
-@app.get("/api/data/{symbol}/{timeframe}")
-def fetch_data(symbol: str, timeframe: str = "1h", limit: int = 200):
-    """Fetch OHLCV candles for a symbol."""
-    from core.data_engine import fetch_ohlcv, generate_synthetic
-
-    cfg = load_config()
-    sym = symbol.replace("-", "/")
-
+@app.post("/api/kite/login")
+async def kite_login(req: LoginRequest):
+    """Login to Zerodha Kite."""
+    from core.kite_auth import auto_login, token_login
     try:
-        df = fetch_ohlcv(sym, timeframe=timeframe, limit=limit, exchange_id=cfg.exchange)
-    except Exception:
-        df = generate_synthetic(sym, bars=limit)
-
-    if df.empty:
-        df = generate_synthetic(sym, bars=limit)
-
-    records = df.tail(100).to_dict(orient="records")
-    return {"symbol": sym, "timeframe": timeframe, "count": len(records), "candles": records}
-
-
-@app.get("/api/ticker/{symbol}")
-def get_ticker(symbol: str):
-    """Get current ticker price."""
-    from core.data_engine import fetch_ticker
-
-    cfg = load_config()
-    sym = symbol.replace("-", "/")
-    try:
-        ticker = fetch_ticker(sym, exchange_id=cfg.exchange)
-        return {"symbol": sym, "price": ticker.get("last", 0), "bid": ticker.get("bid", 0), "ask": ticker.get("ask", 0)}
+        if req.method == "auto":
+            token = await auto_login()
+        elif req.method == "token" and req.token:
+            token = await token_login(req.token)
+        else:
+            raise HTTPException(400, "Invalid login method")
+        return {"status": "ok", "message": "Logged in successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(400, str(e))
 
 
-# ─── Signals ──────────────────────────────────────────────────────────────────
+@app.get("/api/kite/margins")
+async def kite_margins():
+    from core.kite_data import get_margins
+    return await get_margins()
 
+
+@app.get("/api/kite/positions")
+async def kite_positions():
+    from core.kite_data import get_positions
+    return await get_positions()
+
+
+@app.get("/api/kite/holdings")
+async def kite_holdings():
+    from core.kite_data import get_holdings
+    return await get_holdings()
+
+
+# ─── Data Endpoints ─────────────────────────────────────────────────────────
+
+@app.get("/api/data/{symbol}")
+async def get_data(symbol: str, days: int = 180):
+    """Fetch historical OHLCV data."""
+    from core.kite_data import fetch_historical
+    df = await fetch_historical(symbol, days=days)
+    return df.tail(100).to_dict(orient="records")
+
+
+@app.get("/api/ltp")
+async def get_ltp(symbols: str = "RELIANCE,TCS,INFY"):
+    """Get last traded prices."""
+    from core.kite_data import get_ltp as _get_ltp
+    sym_list = [s.strip() for s in symbols.split(",")]
+    return await _get_ltp(sym_list)
+
+
+# ─── Scanner Endpoints ──────────────────────────────────────────────────────
+
+@app.get("/api/scan")
+async def scan(scan_type: str = "all", top_n: int = 10):
+    """Scan watchlist for trading opportunities."""
+    from core.scanner import scan_stocks
+    return await scan_stocks(scan_type=scan_type, top_n=top_n)
+
+
+@app.get("/api/scan/fno")
+async def scan_fno(top_n: int = 5):
+    """Scan for F&O opportunities."""
+    from core.scanner import scan_fno_opportunities
+    return await scan_fno_opportunities(top_n=top_n)
+
+
+# ─── Signal Endpoints ───────────────────────────────────────────────────────
 
 @app.post("/api/signal")
-def generate_signal(req: SignalRequest):
-    """Generate a trading signal for a symbol."""
-    from core.data_engine import fetch_ohlcv, generate_synthetic
+async def generate_signal(req: SignalRequest):
+    """Generate AI trading signal for a symbol."""
+    from core.kite_data import fetch_historical
     from core.feature_engine import build_features
-    from core.strategy_engine import generate_signal as gen_sig
+    from core.model_engine import get_latest_model
+    from core.signal_engine import generate_signal as _gen_signal
 
-    cfg = load_config()
-    try:
-        df = fetch_ohlcv(req.symbol, timeframe=req.timeframe, limit=req.limit, exchange_id=cfg.exchange)
-    except Exception:
-        df = generate_synthetic(req.symbol, bars=req.limit)
+    df = await fetch_historical(req.symbol, days=req.days)
+    model_path = get_latest_model(req.symbol, req.model_type)
+    if not model_path:
+        # Train a model first
+        from core.model_engine import train_model
+        featured = build_features(df)
+        result = train_model(featured, req.symbol, req.model_type)
+        model_path = result["file_path"]
 
-    if df.empty:
-        df = generate_synthetic(req.symbol, bars=req.limit)
-
-    sig = gen_sig(df, req.symbol, req.timeframe, model_type=req.model_type)
-
-    # Log to DB
-    try:
-        session = get_session()
-        session.add(Signal(
-            symbol=req.symbol, timeframe=req.timeframe,
-            signal=sig["signal"], confidence=sig["confidence"],
-            model_type=req.model_type,
-        ))
-        session.commit()
-        session.close()
-    except Exception:
-        pass
-
-    return sig
+    signal = _gen_signal(df, model_path, req.model_type)
+    return {"symbol": req.symbol, **signal}
 
 
 @app.get("/api/signals/history")
-def signal_history(limit: int = 50):
-    """Get recent signal history from database."""
-    session = get_session()
-    try:
-        signals = session.query(Signal).order_by(Signal.id.desc()).limit(limit).all()
-        return [{
-            "id": s.id, "timestamp": s.timestamp.isoformat() if s.timestamp else "",
-            "symbol": s.symbol, "timeframe": s.timeframe,
-            "signal": s.signal, "confidence": s.confidence,
-            "model_type": s.model_type,
-        } for s in signals]
-    finally:
-        session.close()
+async def signal_history(limit: int = 50):
+    from core.database import get_signals
+    return get_signals(limit=limit)
 
 
-# ─── Model Training ──────────────────────────────────────────────────────────
-
+# ─── Model Endpoints ────────────────────────────────────────────────────────
 
 @app.post("/api/train")
-def train_model(req: TrainRequest):
-    """Train a model on historical data."""
-    from core.data_engine import fetch_ohlcv, generate_synthetic
+async def train_model(req: TrainRequest):
+    """Train an ML model on historical data."""
+    from core.kite_data import fetch_historical
     from core.feature_engine import build_features
-    from core.model_engine import train_model as do_train
+    from core.model_engine import train_model as _train
+    from core.database import save_model_record
 
-    cfg = load_config()
-    try:
-        df = fetch_ohlcv(req.symbol, timeframe=req.timeframe, limit=req.limit, exchange_id=cfg.exchange)
-    except Exception:
-        df = generate_synthetic(req.symbol, bars=req.limit)
-
-    if df.empty:
-        df = generate_synthetic(req.symbol, bars=req.limit)
-
+    df = await fetch_historical(req.symbol, days=req.days)
     featured = build_features(df)
-    if len(featured) < 100:
-        raise HTTPException(status_code=400, detail=f"Not enough data: {len(featured)} rows (need 100+)")
-
-    try:
-        result = do_train(featured, req.symbol, req.timeframe, req.model_type)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    result = _train(featured, req.symbol, req.model_type)
+    save_model_record(result)
     return result
 
 
 @app.get("/api/models")
-def list_models():
-    """List all trained models."""
-    from core.model_engine import MODEL_DIR
-
-    models = []
-    for f in MODEL_DIR.glob("*"):
-        if f.suffix in (".pkl", ".pt"):
-            parts = f.stem.split("_")
-            models.append({
-                "file": f.name,
-                "type": parts[0] if parts else "unknown",
-                "size_kb": round(f.stat().st_size / 1024, 1),
-                "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
-            })
-    return {"models": models}
+async def list_models():
+    from core.model_engine import list_models as _list
+    return _list()
 
 
-# ─── Backtesting ──────────────────────────────────────────────────────────────
+# ─── Trading Endpoints ──────────────────────────────────────────────────────
 
+@app.post("/api/trade")
+async def execute_trade(req: TradeRequest):
+    """Place a manual trade."""
+    from core.kite_orders import place_order
+    from core.database import save_trade
 
-@app.post("/api/backtest")
-def run_backtest(req: BacktestRequest):
-    """Run a backtest on historical data."""
-    from core.backtester import run_backtest as do_backtest
-    from core.data_engine import fetch_ohlcv, generate_synthetic
-    from core.model_engine import get_latest_model
-
-    cfg = load_config()
-    try:
-        df = fetch_ohlcv(req.symbol, timeframe=req.timeframe, limit=req.limit, exchange_id=cfg.exchange)
-    except Exception:
-        df = generate_synthetic(req.symbol, bars=req.limit)
-
-    if df.empty:
-        df = generate_synthetic(req.symbol, bars=req.limit)
-
-    model_path = get_latest_model(req.symbol, req.timeframe, req.model_type)
-    if not model_path:
-        raise HTTPException(status_code=404, detail="No trained model found. Train a model first via /api/train")
-
-    result = do_backtest(
-        df, model_path=model_path, model_type=req.model_type,
-        initial_capital=req.initial_capital,
+    result = await place_order(
+        symbol=req.symbol, side=req.side, quantity=req.quantity,
+        order_type=req.order_type, price=req.price,
+        product=req.product, exchange=req.exchange,
     )
-    return {
-        "initial_capital": result.initial_capital,
-        "final_capital": result.final_capital,
-        "total_return_pct": result.total_return_pct,
-        "sharpe_ratio": result.sharpe_ratio,
-        "max_drawdown_pct": result.max_drawdown_pct,
-        "win_rate": result.win_rate,
-        "total_trades": result.total_trades,
-        "winning_trades": result.winning_trades,
-        "losing_trades": result.losing_trades,
-        "expectancy": result.expectancy,
-        "cagr": result.cagr,
-        "profit_factor": result.profit_factor,
-        "avg_win": result.avg_win,
-        "avg_loss": result.avg_loss,
-        "equity_curve": result.equity_curve[-200:],  # limit for response size
-    }
-
-
-# ─── Trading / Execution ─────────────────────────────────────────────────────
-
-
-@app.post("/api/trade/execute")
-def execute_trade(req: ExecuteRequest):
-    """Execute a trade signal (paper or live)."""
-    from core.execution_engine import execute_signal
-
-    signal = {
-        "symbol": req.symbol,
-        "signal": req.side,
-        "confidence": req.confidence,
-        "model_type": req.model_type,
-        "atr": 0,
-    }
-    result = execute_signal(signal)
-    if result is None:
-        raise HTTPException(status_code=400, detail="Trade rejected by risk engine or already positioned")
+    save_trade(result)
     return result
 
 
 @app.get("/api/trades")
-def get_trades(status: str = "all", limit: int = 50):
-    """Get trade history from database."""
-    session = get_session()
-    try:
-        q = session.query(Trade)
-        if status != "all":
-            q = q.filter(Trade.status == status)
-        trades = q.order_by(Trade.id.desc()).limit(limit).all()
-        return [{
-            "id": t.id,
-            "timestamp": t.timestamp.isoformat() if t.timestamp else "",
-            "symbol": t.symbol, "side": t.side,
-            "price": t.price, "quantity": t.quantity,
-            "pnl": t.pnl, "status": t.status, "mode": t.mode,
-            "stop_loss": t.stop_loss, "take_profit": t.take_profit,
-            "model_type": t.model_type, "confidence": t.confidence,
-            "close_reason": t.close_reason,
-            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
-        } for t in trades]
-    finally:
-        session.close()
+async def get_trades(limit: int = 50, symbol: str = ""):
+    from core.database import get_trades as _get
+    return _get(limit=limit, symbol=symbol)
 
 
-@app.post("/api/trade/close/{symbol}")
-def close_trade(symbol: str):
-    """Manually close an open paper trade."""
-    from core.data_engine import fetch_ticker
-    from core.execution_engine import paper_close
-
-    cfg = load_config()
-    sym = symbol.replace("-", "/")
-    try:
-        ticker = fetch_ticker(sym, exchange_id=cfg.exchange)
-        price = ticker.get("last", 0)
-    except Exception:
-        price = 0
-
-    if price <= 0:
-        raise HTTPException(status_code=400, detail="Cannot determine current price")
-
-    result = paper_close(sym, price, reason="manual_api")
-    if result is None:
-        raise HTTPException(status_code=404, detail="No open position for this symbol")
-    return result
+@app.get("/api/orders")
+async def get_orders():
+    from core.kite_orders import get_orders as _get
+    return await _get()
 
 
-# ─── Risk ─────────────────────────────────────────────────────────────────────
+# ─── Backtest Endpoints ─────────────────────────────────────────────────────
 
+@app.post("/api/backtest")
+async def backtest(req: BacktestRequest):
+    """Run a backtest on historical data."""
+    from core.kite_data import fetch_historical
+    from core.feature_engine import build_features
+    from core.model_engine import get_latest_model, train_model as _train
+    from core.backtester import run_backtest
+
+    df = await fetch_historical(req.symbol, days=req.days)
+    model_path = get_latest_model(req.symbol, req.model_type)
+    if not model_path:
+        featured = build_features(df)
+        result = _train(featured, req.symbol, req.model_type)
+        model_path = result["file_path"]
+
+    return run_backtest(df, model_path, req.model_type, req.initial_capital)
+
+
+# ─── Risk Endpoints ─────────────────────────────────────────────────────────
 
 @app.get("/api/risk")
-def get_risk():
-    """Get current risk state and analytics."""
-    from core.risk_engine import get_risk_summary
-
-    return get_risk_summary()
-
-
-@app.post("/api/risk/init")
-def init_risk_capital(capital: float = 10000.0):
-    """Initialize risk engine with starting capital."""
-    from core.risk_engine import init_risk
-
-    init_risk(capital)
-    return {"status": "ok", "capital": capital}
+async def get_risk():
+    from core.risk_engine import get_risk_analytics, get_risk_state
+    state = get_risk_state()
+    return {
+        "analytics": get_risk_analytics(),
+        "open_positions": {
+            k: v for k, v in state.open_positions.items()
+        },
+    }
 
 
 @app.post("/api/risk/kill-switch")
-def set_kill_switch(req: KillSwitchRequest):
-    """Toggle the kill switch."""
-    val = "true" if req.enabled else "false"
-    os.environ["KILL_SWITCH"] = val
-    return {"kill_switch": req.enabled}
+async def toggle_kill_switch(enable: bool = True):
+    """Toggle the emergency kill switch."""
+    import os
+    os.environ["KILL_SWITCH"] = "true" if enable else "false"
+    return {"kill_switch": enable}
 
 
-# ─── Auto-Trading Loop ───────────────────────────────────────────────────────
-
-_auto_trading = False
-
+# ─── Auto-Trading Endpoints ─────────────────────────────────────────────────
 
 @app.post("/api/auto/start")
-def start_auto_trading():
-    """Start the auto-trading loop."""
-    global _auto_trading
-    if _auto_trading:
-        return {"status": "already_running"}
+async def start_auto_trading():
+    """Start the auto-trading scheduler."""
+    global _scheduler
+    from core.auto_trader import enable_auto_trading, trading_cycle
 
-    from core.risk_engine import init_risk
-
+    enable_auto_trading()
     cfg = load_config()
-    init_risk(cfg.default_capital)
-    _auto_trading = True
 
-    # Start background scheduler
     try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(_trading_cycle, "interval", minutes=60, id="trading_cycle")
-        scheduler.start()
-        logger.info("Auto-trading started (1h cycle)")
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        if _scheduler is None:
+            _scheduler = AsyncIOScheduler()
+            _scheduler.add_job(
+                trading_cycle,
+                "interval",
+                seconds=cfg.scan_interval,
+                id="trading_cycle",
+                replace_existing=True,
+            )
+            _scheduler.start()
     except ImportError:
-        logger.warning("APScheduler not installed — auto-trading requires manual trigger")
+        # Fallback: run single cycle
+        asyncio.create_task(trading_cycle())
 
-    return {"status": "started", "mode": cfg.mode, "interval": "1h"}
+    return {"status": "auto-trading started", "interval": cfg.scan_interval}
 
 
 @app.post("/api/auto/stop")
-def stop_auto_trading():
-    """Stop the auto-trading loop."""
-    global _auto_trading
-    _auto_trading = False
-    try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-        # Signal the scheduler to stop on next check
-    except Exception:
-        pass
-    return {"status": "stopped"}
+async def stop_auto_trading():
+    global _scheduler
+    from core.auto_trader import disable_auto_trading
+    disable_auto_trading()
+    if _scheduler:
+        _scheduler.shutdown(wait=False)
+        _scheduler = None
+    return {"status": "auto-trading stopped"}
 
 
-@app.get("/api/auto/status")
-def auto_status():
-    return {"running": _auto_trading}
+@app.post("/api/auto/cycle")
+async def run_single_cycle():
+    """Run one auto-trading cycle manually."""
+    from core.auto_trader import trading_cycle
+    return await trading_cycle()
 
 
-def _trading_cycle():
-    """One auto-trading cycle: fetch data, generate signals, execute."""
-    if not _auto_trading:
-        return
-
-    from core.data_engine import fetch_multi_timeframe, fetch_ohlcv
-    from core.execution_engine import execute_signal, paper_check_exits
-    from core.strategy_engine import generate_multi_timeframe_signal
-
-    cfg = load_config()
-    all_tfs = [cfg.primary_timeframe] + cfg.confirmation_timeframes
-
-    for symbol in cfg.symbols:
-        try:
-            # Fetch data
-            tf_data = fetch_multi_timeframe(symbol, all_tfs, limit=200, exchange_id=cfg.exchange)
-            if not tf_data:
-                continue
-
-            # Generate signal
-            sig = generate_multi_timeframe_signal(tf_data, symbol, model_type=cfg.primary_model)
-
-            # Execute if actionable
-            if sig["signal"] != "HOLD":
-                execute_signal(sig)
-
-            # Check exits on open positions
-            from core.data_engine import fetch_ticker
-            ticker = fetch_ticker(symbol, exchange_id=cfg.exchange)
-            if ticker:
-                paper_check_exits({symbol: ticker.get("last", 0)})
-
-        except Exception as e:
-            logger.error("Trading cycle error for %s: %s", symbol, e)
+@app.get("/api/auto/log")
+async def get_auto_log():
+    from core.auto_trader import get_trade_log, get_cycle_count
+    return {"cycles": get_cycle_count(), "log": get_trade_log()}
 
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
+# ─── Daily P&L ──────────────────────────────────────────────────────────────
+
+@app.get("/api/pnl/daily")
+async def daily_pnl(days: int = 30):
+    from core.database import get_daily_pnl
+    return get_daily_pnl(days)
 
 
-def start_api():
-    """Start the API server."""
-    import uvicorn
-
-    cfg = load_config()
-    uvicorn.run(app, host=cfg.api_host, port=cfg.api_port, log_level="info")
-
+# ─── Run ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    start_api()
+    import uvicorn
+    cfg = load_config()
+    logging.basicConfig(level=cfg.log_level)
+    uvicorn.run(app, host=cfg.api_host, port=cfg.api_port)

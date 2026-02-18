@@ -1,66 +1,144 @@
 # =============================================================================
-# AI Auto-Trading System — Configuration
+# KiteAI — Personal AI Auto-Trading Addon for Zerodha Kite
 # =============================================================================
-# Copy this file and modify as needed. Never commit secrets.
+# IMPORTANT: Never commit this file with real credentials.
+# Use .env for secrets, this file for trading parameters only.
 
 system:
-  mode: paper                # paper (default) or live
+  mode: paper                  # paper (simulated) or live (real orders)
   log_level: INFO
-  db_path: database/trading.db
-  timezone: UTC
+  db_path: data/kiteai.db
+  timezone: Asia/Kolkata
 
+# ─── Zerodha Kite Connect ───────────────────────────────────────────────────
+# Set these in .env file, NOT here. Listed for reference only.
+# KITE_API_KEY=your_api_key
+# KITE_API_SECRET=your_api_secret
+# KITE_USER_ID=your_user_id
+# KITE_PASSWORD=your_password
+# KITE_TOTP_SECRET=your_totp_secret
+
+# ─── Watchlist ──────────────────────────────────────────────────────────────
 trading:
-  exchange: binance
-  symbols:
-    - BTC/USDT
-    - ETH/USDT
-  timeframes:
-    primary: 1h
-    confirmation:
-      - 4h
-      - 1d
-  default_capital: 10000.0   # USDT paper balance
+  exchange: NSE
+  watchlist:
+    - RELIANCE
+    - TCS
+    - INFY
+    - HDFCBANK
+    - ICICIBANK
+    - SBIN
+    - BAJFINANCE
+    - ITC
+    - HINDUNILVR
+    - KOTAKBANK
+    - TATAMOTORS
+    - MARUTI
+    - AXISBANK
+    - LT
+    - SUNPHARMA
+    - TITAN
+    - BHARTIARTL
+    - WIPRO
+    - HCLTECH
+    - ADANIENT
 
+  # Intraday settings
+  intraday:
+    enabled: true
+    product: MIS                # MIS = intraday margin
+    max_trades: 5
+
+  # BTST (Buy Today Sell Tomorrow)
+  btst:
+    enabled: true
+    product: NRML               # NRML = carry forward
+    max_positions: 3
+    target_pct: 0.03            # 3% target
+    stoploss_pct: 0.015         # 1.5% stoploss
+
+  # F&O (Futures & Options)
+  fno:
+    enabled: true
+    exchange: NFO
+    lot_size: 1
+    strike_offset: 0            # 0=ATM, +1=OTM, -1=ITM
+    expiry: weekly              # weekly or monthly
+
+  # Market hours (IST)
+  market_open: "09:15"
+  market_close: "15:15"
+  square_off_minutes_before: 10  # auto square-off MIS before close
+
+# ─── Risk Management ───────────────────────────────────────────────────────
 risk:
-  max_position_pct: 0.02     # 2% of capital per trade
-  atr_sl_multiplier: 2.0     # stop loss = 2x ATR
-  atr_tp_multiplier: 3.0     # take profit = 3x ATR
-  max_daily_loss_pct: 0.05   # 5% daily loss cap
-  max_drawdown_pct: 0.15     # 15% max drawdown kill
-  cooldown_minutes: 30       # wait after trade
-  max_open_trades: 3
-  kill_switch: false          # emergency stop all trading
+  max_daily_loss: 5000          # INR - hard stop for the day
+  max_position_value: 100000    # INR per position
+  max_open_positions: 5
+  stop_loss_pct: 0.02           # 2% default SL
+  take_profit_pct: 0.04         # 4% default TP
+  max_trades_per_day: 20
+  min_confidence: 0.60          # minimum AI confidence to trade
+  kill_switch: false            # emergency stop all trading
+  cooldown_minutes: 5           # wait between trades on same symbol
 
-model:
-  primary: random_forest
-  fallback: xgboost
-  retrain_hours: 6
-  lookback_days: 90
-  prediction_horizon: 5      # bars ahead
+# ─── AI / ML Engine ────────────────────────────────────────────────────────
+ai:
+  primary_model: random_forest
+  fallback_model: xgboost
+  ensemble_mode: adaptive       # adaptive, simple, or single
+  retrain_hours: 24
+  lookback_days: 180
   min_confidence: 0.60
-  features: auto              # auto = use feature importance
+  prediction_horizon: 5         # bars ahead
+
+  # Feature toggles
+  regime_detection: true        # auto-detect market regime
+  adaptive_ensemble: true       # dynamic model weighting
+  multi_timeframe: true         # multi-TF signal alignment
+  dynamic_sl_tp: true           # ATR/regime-based SL/TP
+  volatility_sizing: true       # volatility-adjusted position sizing
+  signal_quality_filter: true   # filter D-quality signals
+  tilt_protection: true         # pause after consecutive losses
+
+  # Model hyperparameters
   random_forest:
-    n_estimators: 100
-    max_depth: 10
+    n_estimators: 200
+    max_depth: 12
   xgboost:
-    n_estimators: 100
-    max_depth: 6
-    learning_rate: 0.1
+    n_estimators: 150
+    max_depth: 8
+    learning_rate: 0.05
   lstm:
-    enabled: false            # disabled by default (saves RAM)
-    seq_len: 20
+    enabled: false              # enable if you have GPU/enough RAM
+    seq_len: 30
     hidden_size: 64
-    epochs: 30
-    batch_size: 32
+    epochs: 50
+  transformer:
+    enabled: true
+    d_model: 64
+    n_heads: 4
+    n_layers: 3
+    seq_len: 30
+    dropout: 0.2
 
+# ─── Backtest ──────────────────────────────────────────────────────────────
 backtest:
-  initial_capital: 10000.0
-  commission_pct: 0.001       # 0.1% per trade
-  slippage_pct: 0.0005        # 0.05%
+  initial_capital: 100000       # INR
+  commission_pct: 0.0003        # Zerodha ~0.03% for intraday
+  slippage_pct: 0.001           # 0.1% slippage estimate
+  stt_pct: 0.001                # Securities Transaction Tax
 
+# ─── Auto-Trading Schedule ─────────────────────────────────────────────────
+scheduler:
+  scan_interval_seconds: 60     # scan every 60 seconds
+  retrain_cron: "0 8 * * 1"    # retrain weekly Monday 8 AM
+
+# ─── API Server ────────────────────────────────────────────────────────────
 api:
   host: 0.0.0.0
   port: 8000
 
+# ─── Dashboard ─────────────────────────────────────────────────────────────
 dashboard:
   port: 8501

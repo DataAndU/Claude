@@ -1,23 +1,21 @@
-"""ML model engine — RandomForest, XGBoost, lightweight LSTM, auto-retrain.
+"""ML model engine — RandomForest, XGBoost, LSTM, Transformer.
 
 All models run CPU-only with small memory footprint.
-Provides feature importance output and model persistence.
+Provides feature importance, model persistence, and unified predict/train APIs.
 """
 
 from __future__ import annotations
 
 import gc
-import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, f1_score
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 
 from core.config import load_config
@@ -25,26 +23,22 @@ from core.feature_engine import FEATURE_COLS
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = Path("database/models")
+MODEL_DIR = Path("data/models")
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ─── Label Creation ───────────────────────────────────────────────────────────
-
+# ─── Label Creation ──────────────────────────────────────────────────────────
 
 def create_labels(df: pd.DataFrame, horizon: int = 5, threshold: float = 0.005) -> pd.Series:
     """Create classification labels: 0=SELL, 1=HOLD, 2=BUY based on future returns."""
     future_ret = df["close"].pct_change(horizon).shift(-horizon)
-    labels = pd.Series(1, index=df.index, dtype=int)  # default HOLD
+    labels = pd.Series(1, index=df.index, dtype=int)
     labels[future_ret > threshold] = 2   # BUY
     labels[future_ret < -threshold] = 0  # SELL
     return labels
 
 
-def prepare_dataset(
-    df: pd.DataFrame, horizon: int = 5,
-) -> Tuple[pd.DataFrame, pd.Series]:
-    """Extract feature matrix X and labels y from featured DataFrame."""
+def prepare_dataset(df: pd.DataFrame, horizon: int = 5) -> Tuple[pd.DataFrame, pd.Series]:
     available = [c for c in FEATURE_COLS if c in df.columns]
     labels = create_labels(df, horizon=horizon)
     mask = labels.notna() & df[available].notna().all(axis=1)
@@ -53,13 +47,9 @@ def prepare_dataset(
     return X, y
 
 
-# ─── Random Forest ────────────────────────────────────────────────────────────
+# ─── Random Forest ───────────────────────────────────────────────────────────
 
-
-def train_random_forest(
-    df: pd.DataFrame, symbol: str, timeframe: str = "1h",
-) -> Dict[str, Any]:
-    """Train a Random Forest classifier and save to disk."""
+def train_random_forest(df: pd.DataFrame, symbol: str) -> Dict[str, Any]:
     cfg = load_config()
     X, y = prepare_dataset(df, horizon=cfg.prediction_horizon)
     if len(X) < 100:
@@ -71,8 +61,8 @@ def train_random_forest(
 
     params = cfg.rf_params
     clf = RandomForestClassifier(
-        n_estimators=params.get("n_estimators", 100),
-        max_depth=params.get("max_depth", 10),
+        n_estimators=params.get("n_estimators", 200),
+        max_depth=params.get("max_depth", 12),
         random_state=42, n_jobs=-1, class_weight="balanced",
     )
     clf.fit(X_train, y_train)
@@ -80,26 +70,22 @@ def train_random_forest(
     y_pred = clf.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
-
-    # Feature importance
     importance = dict(zip(X_train.columns.tolist(), clf.feature_importances_.tolist()))
 
-    # Save
-    model_path = MODEL_DIR / f"rf_{symbol.replace('/', '_')}_{timeframe}.pkl"
+    model_path = MODEL_DIR / f"rf_{symbol}.pkl"
     with open(model_path, "wb") as f:
         pickle.dump({"model": clf, "features": X_train.columns.tolist()}, f)
 
     logger.info("RF trained: acc=%.4f f1=%.4f path=%s", acc, f1, model_path)
     gc.collect()
     return {
-        "model_type": "random_forest", "symbol": symbol, "timeframe": timeframe,
-        "accuracy": float(acc), "f1": float(f1), "file_path": str(model_path),
-        "feature_importance": importance,
+        "model_type": "random_forest", "symbol": symbol,
+        "accuracy": float(acc), "f1": float(f1),
+        "file_path": str(model_path), "feature_importance": importance,
     }
 
 
 def predict_rf(model_path: str, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    """Predict using saved RF model. Returns (predictions, probabilities)."""
     with open(model_path, "rb") as f:
         data = pickle.load(f)
     clf = data["model"]
@@ -111,13 +97,9 @@ def predict_rf(model_path: str, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarra
     return preds, probs
 
 
-# ─── XGBoost ──────────────────────────────────────────────────────────────────
+# ─── XGBoost ────────────────────────────────────────────────────────────────
 
-
-def train_xgboost(
-    df: pd.DataFrame, symbol: str, timeframe: str = "1h",
-) -> Dict[str, Any]:
-    """Train an XGBoost classifier and save to disk."""
+def train_xgboost(df: pd.DataFrame, symbol: str) -> Dict[str, Any]:
     try:
         from xgboost import XGBClassifier
     except ImportError:
@@ -134,9 +116,9 @@ def train_xgboost(
 
     params = cfg.xgb_params
     clf = XGBClassifier(
-        n_estimators=params.get("n_estimators", 100),
-        max_depth=params.get("max_depth", 6),
-        learning_rate=params.get("learning_rate", 0.1),
+        n_estimators=params.get("n_estimators", 150),
+        max_depth=params.get("max_depth", 8),
+        learning_rate=params.get("learning_rate", 0.05),
         use_label_encoder=False, eval_metric="mlogloss",
         tree_method="hist", n_jobs=-1, random_state=42,
     )
@@ -145,24 +127,22 @@ def train_xgboost(
     y_pred = clf.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
-
     importance = dict(zip(X_train.columns.tolist(), clf.feature_importances_.tolist()))
 
-    model_path = MODEL_DIR / f"xgb_{symbol.replace('/', '_')}_{timeframe}.pkl"
+    model_path = MODEL_DIR / f"xgb_{symbol}.pkl"
     with open(model_path, "wb") as f:
         pickle.dump({"model": clf, "features": X_train.columns.tolist()}, f)
 
     logger.info("XGB trained: acc=%.4f f1=%.4f path=%s", acc, f1, model_path)
     gc.collect()
     return {
-        "model_type": "xgboost", "symbol": symbol, "timeframe": timeframe,
-        "accuracy": float(acc), "f1": float(f1), "file_path": str(model_path),
-        "feature_importance": importance,
+        "model_type": "xgboost", "symbol": symbol,
+        "accuracy": float(acc), "f1": float(f1),
+        "file_path": str(model_path), "feature_importance": importance,
     }
 
 
 def predict_xgb(model_path: str, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    """Predict using saved XGBoost model."""
     with open(model_path, "rb") as f:
         data = pickle.load(f)
     clf = data["model"]
@@ -174,13 +154,9 @@ def predict_xgb(model_path: str, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarr
     return preds, probs
 
 
-# ─── Lightweight LSTM ─────────────────────────────────────────────────────────
+# ─── Lightweight LSTM ───────────────────────────────────────────────────────
 
-
-def train_lstm(
-    df: pd.DataFrame, symbol: str, timeframe: str = "1h",
-) -> Dict[str, Any]:
-    """Train a lightweight LSTM (CPU-only, small hidden size)."""
+def train_lstm(df: pd.DataFrame, symbol: str) -> Dict[str, Any]:
     try:
         import torch
         import torch.nn as nn
@@ -190,9 +166,9 @@ def train_lstm(
 
     cfg = load_config()
     lp = cfg.lstm_params
-    seq_len = lp.get("seq_len", 20)
+    seq_len = lp.get("seq_len", 30)
     hidden = lp.get("hidden_size", 64)
-    epochs = lp.get("epochs", 30)
+    epochs = lp.get("epochs", 50)
     batch_size = lp.get("batch_size", 32)
 
     X, y = prepare_dataset(df, horizon=cfg.prediction_horizon)
@@ -202,7 +178,6 @@ def train_lstm(
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X.values)
 
-    # Create sequences
     Xs, ys = [], []
     for i in range(len(X_scaled) - seq_len):
         Xs.append(X_scaled[i:i + seq_len])
@@ -255,7 +230,7 @@ def train_lstm(
     acc = accuracy_score(y_test, preds)
     f1 = f1_score(y_test, preds, average="weighted", zero_division=0)
 
-    model_path = MODEL_DIR / f"lstm_{symbol.replace('/', '_')}_{timeframe}.pt"
+    model_path = MODEL_DIR / f"lstm_{symbol}.pt"
     torch.save({
         "model_state": model.state_dict(),
         "scaler_mean": scaler.mean_.tolist(),
@@ -269,14 +244,13 @@ def train_lstm(
     logger.info("LSTM trained: acc=%.4f f1=%.4f path=%s", acc, f1, model_path)
     gc.collect()
     return {
-        "model_type": "lstm", "symbol": symbol, "timeframe": timeframe,
-        "accuracy": float(acc), "f1": float(f1), "file_path": str(model_path),
-        "feature_importance": {},
+        "model_type": "lstm", "symbol": symbol,
+        "accuracy": float(acc), "f1": float(f1),
+        "file_path": str(model_path), "feature_importance": {},
     }
 
 
 def predict_lstm(model_path: str, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    """Predict using saved LSTM model."""
     import torch
     import torch.nn as nn
 
@@ -317,29 +291,23 @@ def predict_lstm(model_path: str, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndar
     return preds, probs.max(axis=1)
 
 
-# ─── Unified Interface ────────────────────────────────────────────────────────
+# ─── Unified Interface ──────────────────────────────────────────────────────
 
 LABEL_MAP = {0: "SELL", 1: "HOLD", 2: "BUY"}
 
 
-def train_model(
-    df: pd.DataFrame, symbol: str, timeframe: str = "1h", model_type: str = "random_forest",
-) -> Dict[str, Any]:
-    """Train any supported model type."""
+def train_model(df: pd.DataFrame, symbol: str, model_type: str = "random_forest") -> Dict[str, Any]:
     if model_type == "random_forest":
-        return train_random_forest(df, symbol, timeframe)
+        return train_random_forest(df, symbol)
     elif model_type == "xgboost":
-        return train_xgboost(df, symbol, timeframe)
+        return train_xgboost(df, symbol)
     elif model_type == "lstm":
-        return train_lstm(df, symbol, timeframe)
+        return train_lstm(df, symbol)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
 
-def predict(
-    model_path: str, df: pd.DataFrame, model_type: str = "random_forest",
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Predict using any supported model type."""
+def predict(model_path: str, df: pd.DataFrame, model_type: str = "random_forest") -> Tuple[np.ndarray, np.ndarray]:
     if model_type in ("random_forest", "rf"):
         return predict_rf(model_path, df)
     elif model_type in ("xgboost", "xgb"):
@@ -350,11 +318,25 @@ def predict(
         raise ValueError(f"Unknown model type: {model_type}")
 
 
-def get_latest_model(symbol: str, timeframe: str, model_type: str) -> Optional[str]:
-    """Find the latest saved model file for a given symbol/timeframe."""
+def get_latest_model(symbol: str, model_type: str) -> Optional[str]:
     prefix_map = {"random_forest": "rf", "xgboost": "xgb", "lstm": "lstm"}
     prefix = prefix_map.get(model_type, model_type)
-    sym_clean = symbol.replace("/", "_")
     ext = ".pt" if model_type == "lstm" else ".pkl"
-    path = MODEL_DIR / f"{prefix}_{sym_clean}_{timeframe}{ext}"
+    path = MODEL_DIR / f"{prefix}_{symbol}{ext}"
     return str(path) if path.exists() else None
+
+
+def list_models() -> list:
+    """List all saved models."""
+    models = []
+    for p in MODEL_DIR.glob("*"):
+        if p.suffix in (".pkl", ".pt"):
+            models.append({
+                "file": p.name,
+                "path": str(p),
+                "type": "lstm" if p.suffix == ".pt" else (
+                    "xgboost" if p.name.startswith("xgb") else "random_forest"
+                ),
+                "size_kb": round(p.stat().st_size / 1024, 1),
+            })
+    return models

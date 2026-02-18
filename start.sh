@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# start.sh — One-command launcher for AI Auto-Trading System
+# start.sh — One-command launcher for KiteAI Auto-Trading System
 # Usage: ./start.sh
 # First run will auto-install everything.
 
@@ -8,7 +8,7 @@ set -e
 cd "$(dirname "$0")"
 
 echo "============================================="
-echo " AI Auto-Trading System"
+echo " KiteAI — Zerodha AI Auto-Trader"
 echo "============================================="
 
 # Auto-install on first run
