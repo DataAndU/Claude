@@ -581,6 +581,244 @@ def show_watchlist():
     print(f"\n  {DIM}Total: {len(FNO_SYMBOLS)} F&O stocks{N}")
 
 
+# ── Auto-Trading ─────────────────────────────────────────────────────────────
+
+def _auto_trade_status_line() -> str:
+    from app.services.auto_trader import is_auto_trading_enabled, is_market_open, get_cycle_count
+    enabled = is_auto_trading_enabled()
+    market = is_market_open()
+    cycles = get_cycle_count()
+    e = f"{G}ON{N}" if enabled else f"{R}OFF{N}"
+    m = f"{G}OPEN{N}" if market else f"{R}CLOSED{N}"
+    return f"Auto: {e}  Market: {m}  Cycles: {cycles}"
+
+
+def show_auto_trade():
+    header("AUTO-TRADING ENGINE")
+    from app.services.auto_trader import (
+        is_auto_trading_enabled, is_market_open, get_auto_modes,
+        get_min_scores, get_cycle_count, get_trade_log,
+        get_risk_state,
+    )
+    from app.services.risk_manager import get_risk_state
+
+    enabled = is_auto_trading_enabled()
+    market = is_market_open()
+    modes = get_auto_modes()
+    scores = get_min_scores()
+    cycles = get_cycle_count()
+    state = get_risk_state()
+
+    row("Auto-Trading", "ENABLED" if enabled else "DISABLED", G if enabled else R)
+    row("Market Status", "OPEN" if market else "CLOSED", G if market else R)
+    row("Cycles Run", str(cycles))
+    row("Trades Today", str(state.trade_count))
+    row("Day P&L", f"₹{state.realized_pnl:+,.2f}",
+        G if state.realized_pnl >= 0 else R)
+    row("Open Positions", str(len(state.open_positions)))
+    print()
+
+    print(f"  {W}Active Modes:{N}")
+    for mode, active in modes.items():
+        label = mode.replace("_", " ").title()
+        row(f"  {label}", "ON" if active else "OFF", G if active else DIM)
+    print()
+    print(f"  {W}Min Scores:{N}")
+    row("  Intraday", f"{scores['intraday']:.0f}")
+    row("  BTST", f"{scores['btst']:.0f}")
+    row("  Options", f"{scores['options']:.0f}")
+
+    # Show open positions
+    if state.open_positions:
+        print(f"\n  {W}Open Positions:{N}")
+        for sym, pos in state.open_positions.items():
+            side = pos.get("side", "?")
+            entry = pos.get("entry_price", 0)
+            qty = pos.get("quantity", 0)
+            sc = G if side == "BUY" else R
+            print(f"    {sc}{side:<5}{N} {W}{sym:<14}{N} qty={qty}  entry={C}{entry:.2f}{N}")
+
+    # Show recent trade log
+    log = get_trade_log()
+    if log:
+        print(f"\n  {W}Recent Activity (last 10):{N}")
+        for entry in log[-10:]:
+            t = entry.get("time", "")
+            action = entry.get("action", "")
+            sym = entry.get("symbol", "")
+            print(f"    {DIM}{t}{N}  {Y}{action:<15}{N}  {sym}")
+
+    print(f"""
+  {W}Actions:{N}
+  {C}a{N}  {"STOP auto-trading" if enabled else "START auto-trading"}
+  {C}s{N}  Run one scan+trade cycle NOW
+  {C}m{N}  Configure modes & scores
+  {C}l{N}  View full trade log
+  {C}x{N}  Square off all positions
+  {C}0{N}  Back
+""")
+    action = input(f"  {C}>{N} ").strip().lower()
+
+    if action == "a":
+        _toggle_auto_trade()
+    elif action == "s":
+        _run_single_cycle()
+    elif action == "m":
+        _configure_auto_trade()
+    elif action == "l":
+        _show_trade_log()
+    elif action == "x":
+        _square_off_now()
+
+
+def _toggle_auto_trade():
+    from app.services.auto_trader import (
+        is_auto_trading_enabled, enable_auto_trading, disable_auto_trading,
+    )
+    if is_auto_trading_enabled():
+        disable_auto_trading()
+        print(f"\n  {R}Auto-trading STOPPED.{N}")
+    else:
+        from app.core.config import get_settings
+        s = get_settings()
+        print(f"\n  {W}Mode:{N} {G if s.trading_mode == 'paper' else R}{s.trading_mode.upper()}{N}")
+        if s.trading_mode == "live":
+            confirm = input(f"  {R}LIVE MODE — real money! Confirm? (yes/no):{N} ").strip()
+            if confirm != "yes":
+                print(f"  {DIM}Cancelled.{N}")
+                return
+        enable_auto_trading()
+        print(f"\n  {G}Auto-trading STARTED!{N}")
+        print(f"  {DIM}The engine will scan every {s.scheduler_interval_seconds}s during market hours.{N}")
+        print(f"  {DIM}It picks the most profitable instruments and trades them.{N}")
+        print(f"  {DIM}Positions are monitored for SL/TP and auto-squared-off near close.{N}")
+
+
+def _run_single_cycle():
+    print(f"\n  {C}Running one scan+trade cycle...{N}\n")
+    from app.services.auto_trader import scan_and_trade_once
+    result = asyncio.get_event_loop().run_until_complete(scan_and_trade_once())
+
+    signals = result.get("signals_found", 0)
+    orders = result.get("orders_placed", [])
+    closed = result.get("positions_closed", [])
+    skipped = result.get("skipped", [])
+    errors = result.get("errors", [])
+
+    print(f"  {W}Cycle #{result.get('cycle', '?')} @ {result.get('timestamp', '')}{N}\n")
+    row("Signals Found", str(signals))
+    row("Orders Placed", str(len(orders)), G if orders else DIM)
+    row("Positions Closed", str(len(closed)), Y if closed else DIM)
+    row("Skipped", str(len(skipped)))
+    row("Errors", str(len(errors)), R if errors else DIM)
+
+    if orders:
+        print(f"\n  {G}Orders Placed:{N}")
+        for o in orders:
+            sym = o.get("symbol", "?")
+            side = o.get("side", "?")
+            qty = o.get("quantity", 0)
+            price = o.get("price", 0)
+            score = o.get("score", o.get("equity_score", 0))
+            ttype = o.get("trade_type", "?")
+            sc = G if side == "BUY" else R
+            print(f"    {sc}{side:<5}{N} {W}{sym:<14}{N} qty={qty}  "
+                  f"price={C}{price:.2f}{N}  score={score:.0f}  {DIM}{ttype}{N}")
+            reasons = o.get("reasons", [])
+            if reasons:
+                print(f"      {DIM}→ {', '.join(reasons[:3])}{N}")
+
+    if closed:
+        print(f"\n  {Y}Positions Closed:{N}")
+        for c in closed:
+            sym = c.get("symbol", "?")
+            reason = c.get("close_reason", "?")
+            pnl = c.get("pnl", 0)
+            pc = G if pnl >= 0 else R
+            print(f"    {W}{sym:<14}{N} {reason:<12} P&L: {pc}₹{pnl:+,.2f}{N}")
+
+    if errors:
+        print(f"\n  {R}Errors:{N}")
+        for e in errors:
+            print(f"    {R}{e}{N}")
+
+
+def _configure_auto_trade():
+    from app.services.auto_trader import set_auto_modes, get_auto_modes, set_min_scores, get_min_scores
+
+    modes = get_auto_modes()
+    scores = get_min_scores()
+
+    print(f"\n  {W}Toggle modes (enter number):{N}")
+    mode_keys = list(modes.keys())
+    for i, (k, v) in enumerate(modes.items(), 1):
+        label = k.replace("_", " ").title()
+        sc = G if v else R
+        print(f"    {C}{i}{N}  {label}: {sc}{'ON' if v else 'OFF'}{N}")
+
+    choice = input(f"\n  {C}Toggle (1-{len(mode_keys)}), or Enter to skip:{N} ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(mode_keys):
+        key = mode_keys[int(choice) - 1]
+        set_auto_modes(**{key: not modes[key]})
+        new = "ON" if not modes[key] else "OFF"
+        print(f"  {G}{key.replace('_',' ').title()} → {new}{N}")
+
+    print(f"\n  {W}Set min scores (Enter to keep current):{N}")
+    for label, key, current in [
+        ("Intraday", "intraday", scores["intraday"]),
+        ("BTST", "btst", scores["btst"]),
+        ("Options", "options", scores["options"]),
+    ]:
+        val = input(f"    {label} (current {current:.0f}): ").strip()
+        if val:
+            try:
+                set_min_scores(**{key: float(val)})
+                print(f"    {G}Set to {float(val):.0f}{N}")
+            except ValueError:
+                pass
+
+    print(f"\n  {G}Configuration updated.{N}")
+
+
+def _show_trade_log():
+    from app.services.auto_trader import get_trade_log
+    log = get_trade_log()
+    header("AUTO-TRADE LOG")
+    if not log:
+        print(f"  {DIM}No activity yet.{N}")
+        return
+    for entry in log[-30:]:
+        t = entry.get("time", "")
+        action = entry.get("action", "")
+        # Build detail string from remaining keys
+        details = {k: v for k, v in entry.items() if k not in ("time", "action")}
+        detail_str = "  ".join(f"{k}={v}" for k, v in details.items())
+        ac = G if action in ("ORDER", "OPTIONS") else (R if "CLOSE" in action or "SQUARE" in action else Y)
+        print(f"  {DIM}{t}{N}  {ac}{action:<15}{N}  {detail_str}")
+    print(f"\n  {DIM}{len(log)} total entries{N}")
+
+
+def _square_off_now():
+    from app.services.risk_manager import get_risk_state
+    state = get_risk_state()
+    if not state.open_positions:
+        print(f"\n  {DIM}No open positions to close.{N}")
+        return
+    print(f"\n  {Y}Closing {len(state.open_positions)} open positions...{N}")
+    confirm = input(f"  {Y}Confirm? (y/n):{N} ").strip().lower()
+    if confirm != "y":
+        print(f"  {DIM}Cancelled.{N}")
+        return
+
+    from app.services.auto_trader import _square_off_all
+    result = asyncio.get_event_loop().run_until_complete(_square_off_all())
+    closed = result.get("closed", [])
+    total_pnl = sum(c.get("pnl", 0) for c in closed)
+    print(f"\n  {G}Closed {len(closed)} positions.{N}")
+    pc = G if total_pnl >= 0 else R
+    print(f"  Total P&L: {pc}₹{total_pnl:+,.2f}{N}")
+
+
 # ── Main Menu ────────────────────────────────────────────────────────────────
 
 MENU = f"""
@@ -595,8 +833,9 @@ MENU = f"""
 {C}  6{N}  Option chain viewer
 
 {W}  ── TRADING ───────────────────────────────────────{N}
-{C}  7{N}  Place order
+{C}  7{N}  Place order (manual)
 {C}  8{N}  View orders
+{G}  a{N}  {G}AUTO-TRADE (scan + trade automatically){N}
 
 {W}  ── SYSTEM ────────────────────────────────────────{N}
 {C}  9{N}  Risk & config
@@ -614,6 +853,7 @@ ACTIONS = {
     "6": show_option_chain,
     "7": place_order_interactive,
     "8": show_orders,
+    "a": show_auto_trade,
     "9": show_risk_config,
     "w": show_watchlist,
     "k": try_connect_kite,
@@ -637,6 +877,7 @@ def main():
     print(f"  {W}Mode:{N}  {G if s.trading_mode == 'paper' else R}{s.trading_mode.upper()}{N}")
     print(f"  {W}User:{N}  {s.kite_user_id or 'Not configured'}")
     print(f"  {W}Time:{N}  {now.strftime('%H:%M IST  %d-%b-%Y')}")
+    print(f"  {_auto_trade_status_line()}")
     print()
 
     while True:
