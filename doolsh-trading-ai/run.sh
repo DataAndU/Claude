@@ -1,38 +1,89 @@
 #!/usr/bin/env bash
 # =============================================================================
-# DOOLSH TRADING AI — One Command Launch
+# DOOLSH TRADING AI — One Command Setup & Run
 # =============================================================================
-# Just run: bash run.sh
-# That's it. Everything else is automatic.
+# Usage:
+#   bash run.sh          → Terminal dashboard (works in Userland directly)
+#   bash run.sh web      → Web dashboard (open in phone browser)
 # =============================================================================
 set -e
 
-G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; C='\033[0;36m'; N='\033[0m'
-ok()   { echo -e "${G}[OK]${N} $1"; }
-warn() { echo -e "${Y}[!!]${N} $1"; }
-err()  { echo -e "${R}[ERR]${N} $1"; }
-info() { echo -e "${C}[..]${N} $1"; }
+G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; R='\033[0;31m'; N='\033[0m'
+ok(){ echo -e "${G}[OK]${N} $1"; }
+info(){ echo -e "${C}[..]${N} $1"; }
+warn(){ echo -e "${Y}[!!]${N} $1"; }
+
+cd "$(dirname "$0")"
 
 echo ""
 echo "======================================================="
 echo "   DOOLSH TRADING AI"
 echo "   F&O Options + Stocks | Intraday + BTST"
-echo "   Automated Trading for Zerodha Kite"
 echo "======================================================="
 echo ""
 
-# ---- CD to project root ----
-cd "$(dirname "$0")"
-PROJECT_DIR="$(pwd)"
+# ---- Find Python ----
+PY=""
+for p in python3 python3.11 python3.10 python3.9; do
+    command -v "$p" &>/dev/null && PY="$p" && break
+done
+if [ -z "$PY" ]; then
+    info "Installing Python..."
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y -qq python3 python3-pip python3-venv 2>/dev/null || true
+    command -v python3 &>/dev/null && PY="python3"
+fi
+[ -z "$PY" ] && echo "ERROR: python3 not found" && exit 1
+ok "Python: $($PY --version)"
 
-# ---- Create .env with credentials if missing ----
+# ---- Virtual environment ----
+if [ ! -d .venv ]; then
+    info "Creating virtual environment..."
+    $PY -m venv .venv 2>/dev/null || {
+        apt-get install -y -qq python3-venv 2>/dev/null || true
+        $PY -m venv .venv
+    }
+fi
+source .venv/bin/activate
+ok "Venv activated"
+
+# ---- Install deps ----
+if [ ! -f .venv/.ok ]; then
+    info "Installing dependencies (first time only, takes a few minutes)..."
+    pip install --upgrade pip setuptools wheel -q 2>/dev/null
+
+    # Core deps only — no torch, no heavy ML
+    pip install \
+        kiteconnect==5.0.1 \
+        pyotp==2.9.0 \
+        httpx==0.28.1 \
+        pandas \
+        numpy \
+        scikit-learn \
+        "bcrypt>=4.0,<5" \
+        fastapi \
+        uvicorn \
+        pydantic-settings \
+        "sqlalchemy[asyncio]" \
+        aiosqlite \
+        PyJWT \
+        "passlib[bcrypt]" \
+        APScheduler \
+        -q 2>&1 | tail -3
+
+    touch .venv/.ok
+    ok "Dependencies installed"
+else
+    ok "Dependencies ready"
+fi
+
+# ---- Create .env ----
 if [ ! -f .env ]; then
-    info "Creating .env configuration..."
     cat > .env << 'ENVEOF'
 APP_NAME=doolsh-trading-ai
 APP_ENV=production
 DEBUG=false
-SECRET_KEY=d00lsh-tr4d1ng-s3cr3t-k3y-ch4ng3-m3-1n-pr0d
+SECRET_KEY=d00lsh-tr4d1ng-s3cr3t-k3y-2025
 API_VERSION=v1
 DB_PATH=data/doolsh.db
 KITE_API_KEY=8ar6acbfss9x2dxx
@@ -66,103 +117,61 @@ CROSS_VALIDATION_FOLDS=5
 SCHEDULER_INTERVAL_SECONDS=60
 LOG_LEVEL=INFO
 LOG_FORMAT=text
-CORS_ORIGINS=["http://localhost:3000","http://localhost:8000","*"]
+CORS_ORIGINS=["*"]
+OPTIONS_ENABLED=true
+OPTIONS_LOT_SIZE=1
+BTST_ENABLED=true
+BTST_PRODUCT=NRML
 ENVEOF
-    ok "Configuration created with your Kite credentials"
-else
-    ok "Configuration already exists"
-fi
-
-# ---- Find Python ----
-PYTHON=""
-for p in python3 python3.11 python3.10 python3.9; do
-    if command -v "$p" &>/dev/null; then PYTHON="$p"; break; fi
-done
-if [ -z "$PYTHON" ]; then
-    info "Installing Python..."
-    if command -v apt-get &>/dev/null; then
-        apt-get update -qq 2>/dev/null || true
-        apt-get install -y -qq python3 python3-pip python3-venv python3-dev \
-            build-essential libffi-dev libssl-dev 2>/dev/null || true
-    elif command -v pkg &>/dev/null; then
-        pkg install -y python3 2>/dev/null || true
-    fi
-    for p in python3 python3.11 python3.10; do
-        if command -v "$p" &>/dev/null; then PYTHON="$p"; break; fi
-    done
-fi
-if [ -z "$PYTHON" ]; then err "Python3 not found. Install python3 first."; exit 1; fi
-ok "Python: $($PYTHON --version)"
-
-# ---- Virtual environment ----
-if [ ! -d .venv ]; then
-    info "Creating virtual environment..."
-    $PYTHON -m venv .venv 2>/dev/null || {
-        info "Installing venv package..."
-        apt-get install -y -qq python3-venv 2>/dev/null || true
-        $PYTHON -m venv .venv
-    }
-    ok "Virtual environment created"
-fi
-source .venv/bin/activate
-ok "Virtual environment activated"
-
-# ---- Install deps ----
-if [ ! -f .venv/.deps_installed ]; then
-    info "Upgrading pip..."
-    pip install --upgrade pip setuptools wheel -q 2>/dev/null
-
-    info "Installing dependencies (this takes a few minutes first time)..."
-
-    # Try torch CPU-only first (skip if fails — RF model still works)
-    pip install torch --index-url https://download.pytorch.org/whl/cpu -q 2>/dev/null || {
-        pip install torch -q 2>/dev/null || warn "PyTorch skipped — LSTM unavailable, RF works fine"
-    }
-
-    pip install -r requirements.txt -q 2>/dev/null || {
-        warn "Retrying with --no-cache-dir..."
-        pip install -r requirements.txt --no-cache-dir 2>&1 | tail -3
-    }
-
-    touch .venv/.deps_installed
-    ok "All dependencies installed"
-else
-    ok "Dependencies already installed"
+    ok "Config created with your Kite credentials"
 fi
 
 # ---- Create directories ----
 mkdir -p data ml/saved_models logs
 
-# ---- Seed database ----
+# ---- Seed DB ----
 if [ ! -f data/doolsh.db ]; then
     info "Initializing database..."
-    python -m scripts.seed_admin 2>&1 || warn "DB seed had an issue"
-    ok "Database ready (admin / Admin@12345)"
-else
-    ok "Database already exists"
+    python -m scripts.seed_admin 2>/dev/null || true
+    ok "Database ready"
 fi
 
-# ---- Launch ----
 echo ""
 echo "======================================================="
-echo -e "${G}   READY TO TRADE!${N}"
-echo "======================================================="
-echo ""
-echo "  Dashboard:  http://localhost:8000"
-echo "  Login:      admin / Admin@12345"
-echo ""
-echo "  Quick start:"
-echo "    1. Open http://localhost:8000 in browser"
-echo "    2. Login → Click 'Connect Kite' → Click 'Scan'"
-echo "    3. See F&O signals for options + stocks"
-echo "    4. Switch to LIVE mode for real trading"
-echo ""
-echo "  Trading modes:"
-echo "    PAPER = simulated (safe, no real money)"
-echo "    LIVE  = real trades on Zerodha (be careful!)"
-echo ""
-echo "  Press Ctrl+C to stop the server"
+echo -e "${G}   READY!${N}"
 echo "======================================================="
 echo ""
 
-exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+MODE="${1:-terminal}"
+
+if [ "$MODE" = "web" ]; then
+    # ---- Web dashboard mode ----
+    DEVICE_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
+    if [ -z "$DEVICE_IP" ]; then
+        DEVICE_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || echo "127.0.0.1")
+    fi
+
+    echo "  Starting WEB DASHBOARD on port 8000..."
+    echo ""
+    if [ -n "$DEVICE_IP" ] && [ "$DEVICE_IP" != "127.0.0.1" ]; then
+        echo -e "  Open in browser: ${G}http://${DEVICE_IP}:8000${N}"
+    fi
+    echo -e "  Or try:           ${C}http://localhost:8000${N}"
+    echo ""
+    echo "  Login: admin / Admin@12345"
+    echo "  Mode:  PAPER (safe, no real trades)"
+    echo ""
+    echo "  Press Ctrl+C to stop"
+    echo "======================================================="
+    echo ""
+    exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+else
+    # ---- Terminal dashboard mode (default) ----
+    echo "  Launching TERMINAL DASHBOARD..."
+    echo ""
+    echo "  Mode:  PAPER (safe, no real trades)"
+    echo "  Tip:   Run 'bash run.sh web' for browser dashboard"
+    echo "======================================================="
+    echo ""
+    exec python trade.py
+fi
