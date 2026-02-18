@@ -114,6 +114,10 @@ log "pip upgraded"
 # ---- 5. Install Python packages ----
 info "Step 5/7 — Installing Python dependencies (this may take a few minutes)..."
 
+# Fix /tmp permission issues common in UserLand/restricted environments
+export TMPDIR="${PROJECT_DIR}/.tmp_pip"
+mkdir -p "$TMPDIR"
+
 # PyTorch CPU-only (smaller, works on ARM)
 info "Installing PyTorch (CPU-only)..."
 pip install torch --index-url https://download.pytorch.org/whl/cpu -q 2>/dev/null || {
@@ -125,9 +129,24 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu -q 2>/dev/nul
 
 # Install remaining deps
 pip install -r requirements.txt -q 2>/dev/null || {
-    warn "Retrying with --no-cache-dir..."
-    pip install -r requirements.txt --no-cache-dir 2>&1 | tail -5
+    warn "Some packages failed. Installing individually..."
+    # Core framework
+    pip install fastapi "uvicorn[standard]" pydantic pydantic-settings -q 2>/dev/null || true
+    pip install "sqlalchemy[asyncio]" aiosqlite -q 2>/dev/null || true
+    # Zerodha + auth
+    pip install kiteconnect pyotp httpx -q 2>/dev/null || warn "Kite packages failed"
+    pip install PyJWT "passlib[bcrypt]" "bcrypt>=4.0,<5" -q 2>/dev/null || true
+    # Data + ML
+    pip install pandas numpy scikit-learn joblib -q 2>/dev/null || true
+    # Scheduler
+    pip install APScheduler -q 2>/dev/null || true
+    # Testing
+    pip install pytest pytest-asyncio -q 2>/dev/null || true
 }
+
+# Cleanup temp dir
+rm -rf "$TMPDIR"
+
 log "Python dependencies installed"
 
 # ---- 6. Configure environment ----
