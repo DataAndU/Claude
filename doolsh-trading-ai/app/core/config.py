@@ -98,6 +98,25 @@ class Settings(BaseSettings):
     default_train_test_split: float = 0.8
     cross_validation_folds: int = 5
 
+    # ---- AI Features ----
+    ai_regime_detection: bool = True        # Auto-detect market regime each cycle
+    ai_adaptive_ensemble: bool = True       # Use dynamic model weighting
+    ai_confidence_scoring: bool = True      # Multi-indicator AI confidence
+    ai_dynamic_sl_tp: bool = True           # ATR/regime-based SL/TP
+    ai_volatility_sizing: bool = True       # Volatility-adjusted position sizing
+    ai_signal_quality_filter: bool = True   # Filter out D-quality signals
+    ai_multi_timeframe: bool = True         # Multi-timeframe signal alignment
+    ai_tilt_protection: bool = True         # Pause after consecutive losses
+    ai_transformer_enabled: bool = True     # Enable Transformer attention model
+    ai_ensemble_mode: str = "adaptive"      # "adaptive", "simple", "single"
+
+    # Transformer model hyperparameters
+    transformer_d_model: int = 64
+    transformer_n_heads: int = 4
+    transformer_n_layers: int = 3
+    transformer_seq_len: int = 30
+    transformer_dropout: float = 0.2
+
     # ---- Scheduler ----
     scheduler_interval_seconds: int = 60
 
