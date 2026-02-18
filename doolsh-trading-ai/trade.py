@@ -165,8 +165,8 @@ async def place_trade(symbol: str, side: str, qty: int, trade_type: str = "intra
     )
 
 
-async def try_kite_login():
-    """Attempt Kite auto-login. Returns status string."""
+async def try_kite_auto():
+    """Attempt fully automatic Kite login. Returns status string."""
     try:
         from app.core.kite import auto_login, is_logged_in
         if is_logged_in():
@@ -174,7 +174,14 @@ async def try_kite_login():
         token = await auto_login()
         return "CONNECTED" if token else "FAILED"
     except Exception as e:
-        return f"OFFLINE ({e})"
+        return f"FAILED ({e})"
+
+
+async def try_kite_manual(url_or_token: str):
+    """Login with a pasted URL or token."""
+    from app.core.kite import manual_token_login
+    token = await manual_token_login(url_or_token)
+    return "CONNECTED" if token else "FAILED"
 
 
 def kite_status():
@@ -376,37 +383,175 @@ def show_risk_config():
 
 
 def try_connect_kite():
-    header("KITE CONNECTION")
+    header("ZERODHA KITE LOGIN")
     from app.core.config import get_settings
     s = get_settings()
+
+    # Show current status
+    connected = kite_status()
+    row("Status", "CONNECTED" if connected else "Not connected", G if connected else R)
     row("Kite User", s.kite_user_id or "Not set")
     row("API Key", (s.kite_api_key[:6] + "***") if s.kite_api_key else "Not set")
-    row("TOTP Key", "Configured" if s.kite_totp_secret else "Not set", G if s.kite_totp_secret else R)
-    print()
 
-    if not all([s.kite_user_id, s.kite_password, s.kite_totp_secret, s.kite_api_key]):
-        print(f"  {R}Missing Kite credentials in .env file.{N}")
-        print(f"  {DIM}Set KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET, KITE_API_KEY{N}")
+    if connected:
+        print(f"\n  {G}Already connected! Nothing to do.{N}")
         return
 
-    print(f"  {C}Step 1:{N} Sending login credentials...")
-    print(f"  {C}Step 2:{N} Submitting TOTP...")
+    if not s.kite_api_key:
+        print(f"\n  {R}KITE_API_KEY not set in .env — cannot login.{N}")
+        return
+
+    print(f"""
+  {W}Choose login method:{N}
+
+  {C}1{N}  Auto login   {DIM}(TOTP headless — no browser needed){N}
+  {C}2{N}  Browser login {DIM}(open Zerodha in phone browser){N}
+  {C}3{N}  Paste token   {DIM}(paste the redirect URL after browser login){N}
+  {C}0{N}  Cancel
+""")
+    method = input(f"  {C}>{N} ").strip()
+
+    if method == "1":
+        _kite_login_auto()
+    elif method == "2":
+        _kite_login_browser()
+    elif method == "3":
+        _kite_login_paste()
+    else:
+        print(f"  {DIM}Cancelled.{N}")
+
+
+def _kite_login_auto():
+    """Method 1: Fully automatic TOTP login."""
+    from app.core.config import get_settings
+    s = get_settings()
+
+    if not all([s.kite_user_id, s.kite_password, s.kite_totp_secret]):
+        print(f"  {R}Missing credentials for auto-login.{N}")
+        print(f"  {DIM}Need: KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET{N}")
+        return
+
+    print(f"\n  {C}Step 1:{N} Sending login credentials...")
+    print(f"  {C}Step 2:{N} Generating TOTP & submitting...")
     print(f"  {C}Step 3:{N} Extracting request token...")
-    print(f"  {C}Step 4:{N} Generating session...")
-    print()
-    status = asyncio.get_event_loop().run_until_complete(try_kite_login())
+    print(f"  {C}Step 4:{N} Creating session...\n")
+
+    status = asyncio.get_event_loop().run_until_complete(try_kite_auto())
     if status == "CONNECTED":
         print(f"  {G}Connected to Kite successfully!{N}")
-        print(f"  {G}You can now trade in LIVE mode.{N}")
     else:
-        print(f"  {Y}{status}{N}")
+        print(f"  {R}{status}{N}")
+        print(f"\n  {Y}Tip:{N} Try browser login instead (option 2)")
+
+
+def _kite_login_browser():
+    """Method 2: Semi-automatic — open Kite in browser, capture via callback."""
+    from app.core.kite import (
+        get_semi_auto_login_url, start_callback_listener,
+        wait_for_callback, semi_auto_login, _get_device_ip,
+    )
+
+    login_url = get_semi_auto_login_url()
+    device_ip = _get_device_ip()
+
+    # Start the callback server
+    server = start_callback_listener()
+    if server:
+        callback_url = f"http://{device_ip}:5678"
+        print(f"  {G}Callback server started on port 5678{N}\n")
+    else:
+        callback_url = None
+        print(f"  {Y}Could not start callback server.{N}")
+        print(f"  {DIM}You'll need to paste the redirect URL manually (option 3).{N}\n")
+
+    # Show login URL
+    print(f"  {W}Open this URL in your phone browser:{N}\n")
+    print(f"  {G}{login_url}{N}\n")
+
+    # Try to open URL automatically
+    try:
+        import subprocess
+        subprocess.Popen(
+            ["termux-open-url", login_url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        print(f"  {DIM}(Attempted to open automatically){N}")
+    except FileNotFoundError:
+        try:
+            subprocess.Popen(
+                ["xdg-open", login_url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            print(f"  {DIM}(Attempted to open automatically){N}")
+        except FileNotFoundError:
+            pass
+
+    print(f"""
+  {W}Instructions:{N}
+  {DIM}1. Open the URL above in your phone browser{N}
+  {DIM}2. Login to Zerodha with your credentials{N}
+  {DIM}3. Approve the app permissions{N}
+  {DIM}4. After redirect, come back here{N}
+""")
+
+    if callback_url:
+        print(f"  {DIM}NOTE: Set your Kite app redirect URL to:{N}")
+        print(f"  {C}{callback_url}{N}")
         print()
-        print(f"  {DIM}Possible causes:{N}")
-        print(f"  {DIM}  - Invalid credentials or TOTP key{N}")
-        print(f"  {DIM}  - Kite API might be down or rate-limited{N}")
-        print(f"  {DIM}  - Network connectivity issue{N}")
-        print()
-        print(f"  {DIM}Paper mode still works without Kite connection.{N}")
+        print(f"  {Y}Waiting for Kite callback (up to 3 minutes)...{N}")
+        print(f"  {DIM}Press Ctrl+C to cancel and use paste method instead{N}\n")
+
+        try:
+            token = wait_for_callback(timeout=180)
+        except KeyboardInterrupt:
+            token = None
+            print(f"\n  {Y}Cancelled.{N}")
+
+        if token:
+            print(f"  {G}Got request token!{N} Exchanging for session...")
+            try:
+                result = asyncio.get_event_loop().run_until_complete(
+                    semi_auto_login(token)
+                )
+                print(f"  {G}Connected to Kite successfully!{N}")
+                return
+            except Exception as e:
+                print(f"  {R}Session exchange failed: {e}{N}")
+        else:
+            print(f"  {Y}No callback received.{N}")
+
+    # Fallback to paste
+    print(f"\n  {W}Fallback:{N} After logging in, your browser will redirect to a URL.")
+    print(f"  {DIM}Copy the FULL URL from your browser's address bar and paste below.{N}")
+    print(f"  {DIM}It looks like: https://your-redirect-url?request_token=xxx&action=login{N}\n")
+    _kite_login_paste()
+
+
+def _kite_login_paste():
+    """Method 3: User pastes the redirect URL or raw request_token."""
+    from app.core.kite import get_semi_auto_login_url
+
+    login_url = get_semi_auto_login_url()
+    print(f"  {DIM}If you haven't logged in yet, open this URL first:{N}")
+    print(f"  {C}{login_url}{N}\n")
+    print(f"  {W}After login, paste the redirect URL or request_token below.{N}")
+    print(f"  {DIM}(The browser will show a failed page — that's OK, just copy the URL){N}\n")
+
+    url_or_token = input(f"  {C}URL/Token:{N} ").strip()
+    if not url_or_token:
+        print(f"  {DIM}Cancelled.{N}")
+        return
+
+    try:
+        status = asyncio.get_event_loop().run_until_complete(
+            try_kite_manual(url_or_token)
+        )
+        if status == "CONNECTED":
+            print(f"\n  {G}Connected to Kite successfully!{N}")
+        else:
+            print(f"\n  {R}{status}{N}")
+    except Exception as e:
+        print(f"\n  {R}Login failed: {e}{N}")
 
 
 def show_watchlist():

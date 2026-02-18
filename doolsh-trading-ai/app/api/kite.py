@@ -7,7 +7,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.deps import get_current_user, require_role
-from app.core.kite import auto_login, get_kite, get_login_url, is_logged_in, set_request_token
+from app.core.kite import (
+    auto_login, get_kite, get_semi_auto_login_url,
+    is_logged_in, manual_token_login, set_request_token,
+)
 from app.models.user import User, UserRole
 
 logger = logging.getLogger(__name__)
@@ -16,20 +19,30 @@ router = APIRouter(prefix="/kite", tags=["kite"])
 
 
 @router.get("/login-url")
-async def kite_login_url(user: User = Depends(get_current_user)):
-    """Get the Kite login URL to open in a browser."""
-    return {"login_url": get_login_url()}
+async def kite_login_url():
+    """Get the Kite login URL to open in a browser (no auth required)."""
+    return {"login_url": get_semi_auto_login_url()}
 
 
 @router.get("/callback")
-async def kite_callback(request_token: str = Query(...)):
+async def kite_callback(
+    request_token: str = Query(None),
+    action: str = Query(None),
+    status: str = Query(None),
+):
     """OAuth callback — Kite redirects here with request_token.
 
+    No auth required — this is called by Kite's redirect.
     Exchange for access_token and store it.
     """
+    if not request_token:
+        raise HTTPException(status_code=400, detail="Missing request_token parameter")
     try:
-        access_token = await set_request_token(request_token)
-        return {"status": "ok", "message": "Kite session active"}
+        await set_request_token(request_token)
+        return {
+            "status": "ok",
+            "message": "Kite session active! You can close this tab.",
+        }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -41,11 +54,21 @@ async def kite_auto_login(user: User = Depends(require_role(UserRole.ADMIN))):
     Requires KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET in .env.
     """
     try:
-        access_token = await auto_login()
+        await auto_login()
         return {"status": "ok", "message": "Auto-login successful"}
     except Exception as exc:
         logger.exception("Auto-login failed")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/token-login")
+async def kite_token_login(url_or_token: str = Query(...)):
+    """Login with a manually provided request_token or redirect URL (no auth required)."""
+    try:
+        await manual_token_login(url_or_token)
+        return {"status": "ok", "message": "Kite session active"}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/status")
