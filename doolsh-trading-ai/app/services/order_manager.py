@@ -1,7 +1,7 @@
 """Order management service — places, modifies, and cancels orders via Kite.
 
-Supports both LIVE mode (real orders on Zerodha) and PAPER mode (simulated
-fills logged to the database).
+Supports LIVE mode (real orders on Zerodha) and PAPER mode (simulated).
+Handles NSE equity, NFO options, MIS (intraday) and NRML (BTST) products.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from app.core.kite import get_kite, is_logged_in
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# In-memory paper trade ledger (persisted to DB by the API layer)
+# In-memory paper trade ledger
 _paper_orders: List[Dict[str, Any]] = []
 _paper_order_id = 0
 
@@ -35,17 +35,36 @@ async def place_order(
     price: float = 0.0,
     trigger_price: float = 0.0,
     product: Optional[str] = None,
+    exchange: Optional[str] = None,
+    trade_type: str = "intraday",  # "intraday" or "btst"
     tag: str = "doolsh",
 ) -> Dict[str, Any]:
     """Place an order on Kite (live) or simulate it (paper).
 
-    Returns a dict with at minimum: order_id, status, symbol, side, quantity.
+    Args:
+        symbol: Trading symbol (equity or NFO option symbol)
+        side: "BUY" or "SELL"
+        quantity: Number of shares/lots
+        order_type: MARKET, LIMIT, SL, SL-M
+        price: Limit price (for LIMIT/SL orders)
+        trigger_price: Trigger price (for SL/SL-M orders)
+        product: MIS (intraday), NRML (BTST/options), CNC (delivery)
+        exchange: NSE (equity) or NFO (options)
+        trade_type: "intraday" or "btst"
+        tag: Order tag for tracking
     """
-    product = product or settings.trading_product
-    exchange = settings.trading_exchange
+    # Determine product and exchange
+    if product is None:
+        if trade_type == "btst":
+            product = settings.btst_product  # NRML
+        else:
+            product = settings.trading_product  # MIS
+    if exchange is None:
+        exchange = settings.trading_exchange  # NSE
 
     if settings.trading_mode == "paper":
-        return _place_paper_order(symbol, side, quantity, order_type, price, product)
+        return _place_paper_order(symbol, side, quantity, order_type, price,
+                                  product, exchange, trade_type)
 
     # ---- LIVE MODE ----
     if not is_logged_in():
@@ -85,7 +104,8 @@ async def place_order(
         params["price"] = price
 
     order_id = kite.place_order(**params)
-    logger.info("LIVE order placed: %s %s %s qty=%d → id=%s", side, symbol, order_type, quantity, order_id)
+    logger.info("LIVE order: %s %s %s qty=%d exch=%s prod=%s → id=%s",
+                side, symbol, order_type, quantity, exchange, product, order_id)
 
     return {
         "order_id": str(order_id),
@@ -95,17 +115,15 @@ async def place_order(
         "quantity": quantity,
         "order_type": order_type,
         "product": product,
+        "exchange": exchange,
+        "trade_type": trade_type,
         "mode": "live",
     }
 
 
 def _place_paper_order(
-    symbol: str,
-    side: str,
-    quantity: int,
-    order_type: str,
-    price: float,
-    product: str,
+    symbol: str, side: str, quantity: int, order_type: str,
+    price: float, product: str, exchange: str, trade_type: str,
 ) -> Dict[str, Any]:
     order_id = _next_paper_id()
     record = {
@@ -117,11 +135,14 @@ def _place_paper_order(
         "order_type": order_type,
         "price": price,
         "product": product,
+        "exchange": exchange,
+        "trade_type": trade_type,
         "mode": "paper",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     _paper_orders.append(record)
-    logger.info("PAPER order: %s %s %s qty=%d price=%.2f", side, symbol, order_type, quantity, price)
+    logger.info("PAPER order: %s %s %s qty=%d price=%.2f exch=%s prod=%s type=%s",
+                side, symbol, order_type, quantity, price, exchange, product, trade_type)
     return record
 
 

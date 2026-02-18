@@ -1,5 +1,6 @@
 """Application configuration for Zerodha Kite + Userland environment.
 
+Supports equity + options trading, intraday (MIS) + BTST (NRML).
 Uses SQLite (no external DB), in-memory caching (no Redis),
 and APScheduler (no Celery). Designed to run on minimal ARM hardware.
 """
@@ -45,39 +46,52 @@ class Settings(BaseSettings):
     kite_api_secret: str = ""
     kite_user_id: str = ""
     kite_password: str = ""
-    kite_totp_secret: str = ""       # Base32 TOTP secret for auto-login
-    kite_access_token: str = ""       # Populated at runtime after login
-    kite_request_token: str = ""      # Populated during OAuth callback
+    kite_totp_secret: str = ""
+    kite_access_token: str = ""
+    kite_request_token: str = ""
 
     # ---- Trading ----
     trading_mode: str = "paper"       # "paper" or "live"
-    trading_exchange: str = "NSE"
-    trading_product: str = "MIS"      # MIS (intraday) / CNC (delivery) / NRML
+    trading_exchange: str = "NSE"     # NSE for equity, NFO for options
+    trading_product: str = "MIS"      # MIS (intraday) / NRML (BTST/options)
     default_quantity: int = 1
-    watchlist: str = '["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BAJFINANCE","ITC","HINDUNILVR","KOTAKBANK"]'
+    watchlist: str = '["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BAJFINANCE","ITC","HINDUNILVR","KOTAKBANK","TATAMOTORS","MARUTI","AXISBANK","LT","SUNPHARMA","TITAN","ADANIENT","BHARTIARTL","WIPRO","HCLTECH"]'
     market_open_hour: int = 9
     market_open_minute: int = 15
     market_close_hour: int = 15
     market_close_minute: int = 15
-    auto_square_off_minute: int = 10  # minutes before close
+    auto_square_off_minute: int = 10
+
+    # ---- Options Trading ----
+    options_enabled: bool = True
+    options_lot_size: int = 1         # Number of lots
+    options_strike_offset: int = 0    # 0 = ATM, +1 = 1 OTM, -1 = 1 ITM
+    options_expiry_preference: str = "weekly"  # "weekly" or "monthly"
+
+    # ---- BTST (Buy Today Sell Tomorrow) ----
+    btst_enabled: bool = True
+    btst_product: str = "NRML"       # NRML for carry-forward
+    btst_max_positions: int = 3
+    btst_target_pct: float = 0.03    # 3% target for BTST
+    btst_stoploss_pct: float = 0.015 # 1.5% stoploss for BTST
 
     @property
     def watchlist_symbols(self) -> List[str]:
         return json.loads(self.watchlist)
 
     # ---- Risk Management ----
-    max_daily_loss: float = 5000.0           # INR
-    max_position_value: float = 100000.0     # INR per position
+    max_daily_loss: float = 5000.0
+    max_position_value: float = 100000.0
     max_open_positions: int = 5
-    stop_loss_pct: float = 0.02              # 2 %
-    take_profit_pct: float = 0.04            # 4 %
+    stop_loss_pct: float = 0.02
+    take_profit_pct: float = 0.04
     max_trade_count_per_day: int = 20
-    min_confidence_threshold: float = 0.65
+    min_confidence_threshold: float = 0.60
 
     # ---- JWT ----
     jwt_secret_key: str = "change-me-jwt-secret"
     jwt_algorithm: str = "HS256"
-    jwt_access_token_expire_minutes: int = 720  # 12 h for bot sessions
+    jwt_access_token_expire_minutes: int = 1440
 
     # ---- ML ----
     model_save_dir: str = "ml/saved_models"
@@ -85,14 +99,14 @@ class Settings(BaseSettings):
     cross_validation_folds: int = 5
 
     # ---- Scheduler ----
-    scheduler_interval_seconds: int = 60  # main loop tick
+    scheduler_interval_seconds: int = 60
 
     # ---- Logging ----
     log_level: str = "INFO"
-    log_format: str = "text"  # text is friendlier on Userland terminal
+    log_format: str = "text"
 
     # ---- CORS ----
-    cors_origins: str = '["http://localhost:3000","http://localhost:8000"]'
+    cors_origins: str = '["http://localhost:3000","http://localhost:8000","*"]'
 
     @property
     def cors_origin_list(self) -> List[str]:

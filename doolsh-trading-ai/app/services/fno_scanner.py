@@ -1,10 +1,9 @@
-"""F&O symbol scanner — analyses NSE F&O stocks for intraday short-selling.
+"""F&O symbol scanner — analyses NSE F&O stocks for trading signals.
 
-Scores each F&O symbol on technical weakness signals and returns a ranked
-list of candidates to SELL for intraday profit.
+Scores each F&O symbol on technical signals and returns ranked candidates
+for intraday short-selling, intraday buying, and BTST opportunities.
 
-Works in both offline mode (synthetic data for paper testing) and online
-mode (live Kite data).
+Works in both paper mode (synthetic data) and live mode (Kite API).
 """
 
 from __future__ import annotations
@@ -59,7 +58,6 @@ def score_for_short(featured: pd.DataFrame, symbol: str) -> Dict[str, Any]:
     """Score a symbol for short-selling based on technical weakness.
 
     Higher score = stronger SELL signal.
-    Returns a dict with score, individual indicators, and recommendation.
     """
     if featured.empty:
         return {"symbol": symbol, "score": 0, "action": "SKIP", "reason": "no data"}
@@ -70,72 +68,51 @@ def score_for_short(featured: pd.DataFrame, symbol: str) -> Dict[str, Any]:
     score = 0.0
     reasons = []
 
-    # 1. RSI overbought (> 70 = strong sell signal)
     rsi = latest.get("rsi", 50)
     if rsi > 75:
-        score += 25
-        reasons.append(f"RSI overbought: {rsi:.1f}")
+        score += 25; reasons.append(f"RSI overbought: {rsi:.1f}")
     elif rsi > 70:
-        score += 15
-        reasons.append(f"RSI elevated: {rsi:.1f}")
+        score += 15; reasons.append(f"RSI elevated: {rsi:.1f}")
     elif rsi > 60:
         score += 5
 
-    # 2. MACD bearish crossover
     macd_hist = latest.get("macd_hist", 0)
     prev_hist = prev.get("macd_hist", 0)
     if macd_hist < 0 and prev_hist >= 0:
-        score += 20
-        reasons.append("MACD bearish crossover")
+        score += 20; reasons.append("MACD bearish crossover")
     elif macd_hist < 0:
-        score += 10
-        reasons.append(f"MACD negative: {macd_hist:.4f}")
+        score += 10; reasons.append(f"MACD negative: {macd_hist:.4f}")
 
-    # 3. Price above upper Bollinger Band
     bb_pct = latest.get("bb_pct", 0.5)
     if bb_pct > 1.0:
-        score += 20
-        reasons.append(f"Above upper BB: {bb_pct:.2f}")
+        score += 20; reasons.append(f"Above upper BB: {bb_pct:.2f}")
     elif bb_pct > 0.8:
-        score += 10
-        reasons.append(f"Near upper BB: {bb_pct:.2f}")
+        score += 10; reasons.append(f"Near upper BB: {bb_pct:.2f}")
 
-    # 4. Negative 1-day return (momentum down)
     ret_1d = latest.get("return_1d", 0)
     if ret_1d < -0.02:
-        score += 15
-        reasons.append(f"Sharp drop: {ret_1d*100:.1f}%")
+        score += 15; reasons.append(f"Sharp drop: {ret_1d*100:.1f}%")
     elif ret_1d < -0.005:
-        score += 8
-        reasons.append(f"Declining: {ret_1d*100:.1f}%")
+        score += 8; reasons.append(f"Declining: {ret_1d*100:.1f}%")
 
-    # 5. High volatility = opportunity
     vol = latest.get("volatility", 0)
     if vol > 0.3:
-        score += 10
-        reasons.append(f"High volatility: {vol:.2f}")
+        score += 10; reasons.append(f"High volatility: {vol:.2f}")
 
-    # 6. Price below short-term MA (bearish trend)
     close = latest.get("close", 0)
     sma_5 = latest.get("sma_5", close)
     sma_20 = latest.get("sma_20", close)
     if close < sma_5 and close < sma_20:
-        score += 15
-        reasons.append("Below SMA5 and SMA20")
+        score += 15; reasons.append("Below SMA5 and SMA20")
     elif close < sma_5:
-        score += 8
-        reasons.append("Below SMA5")
+        score += 8; reasons.append("Below SMA5")
 
-    # 7. Bearish 5-day trend
     ret_5d = latest.get("return_5d", 0)
     if ret_5d < -0.03:
-        score += 10
-        reasons.append(f"5-day decline: {ret_5d*100:.1f}%")
+        score += 10; reasons.append(f"5-day decline: {ret_5d*100:.1f}%")
 
-    # Normalize to 0-100
     score = min(score, 100)
 
-    # Determine action
     if score >= 60:
         action = "STRONG SELL"
     elif score >= 40:
@@ -146,10 +123,91 @@ def score_for_short(featured: pd.DataFrame, symbol: str) -> Dict[str, Any]:
         action = "HOLD"
 
     return {
-        "symbol": symbol,
-        "score": round(score, 1),
-        "action": action,
-        "reasons": reasons,
+        "symbol": symbol, "score": round(score, 1), "action": action,
+        "direction": "SELL", "reasons": reasons,
+        "price": round(float(close), 2),
+        "rsi": round(float(rsi), 1),
+        "macd_hist": round(float(macd_hist), 4),
+        "bb_pct": round(float(bb_pct), 2),
+        "return_1d_pct": round(float(ret_1d * 100), 2),
+        "return_5d_pct": round(float(ret_5d * 100 if ret_5d else 0), 2),
+        "volatility": round(float(vol), 3),
+        "sma_5": round(float(sma_5), 2),
+        "sma_20": round(float(sma_20), 2),
+    }
+
+
+def score_for_buy(featured: pd.DataFrame, symbol: str) -> Dict[str, Any]:
+    """Score a symbol for buying (BTST long) based on technical strength.
+
+    Higher score = stronger BUY signal. Used for BTST opportunities.
+    """
+    if featured.empty:
+        return {"symbol": symbol, "score": 0, "action": "SKIP", "reason": "no data"}
+
+    latest = featured.iloc[-1]
+    prev = featured.iloc[-2] if len(featured) > 1 else latest
+
+    score = 0.0
+    reasons = []
+
+    rsi = latest.get("rsi", 50)
+    if rsi < 25:
+        score += 25; reasons.append(f"RSI oversold: {rsi:.1f}")
+    elif rsi < 30:
+        score += 15; reasons.append(f"RSI low: {rsi:.1f}")
+    elif rsi < 40:
+        score += 5
+
+    macd_hist = latest.get("macd_hist", 0)
+    prev_hist = prev.get("macd_hist", 0)
+    if macd_hist > 0 and prev_hist <= 0:
+        score += 20; reasons.append("MACD bullish crossover")
+    elif macd_hist > 0:
+        score += 10; reasons.append(f"MACD positive: {macd_hist:.4f}")
+
+    bb_pct = latest.get("bb_pct", 0.5)
+    if bb_pct < 0.0:
+        score += 20; reasons.append(f"Below lower BB: {bb_pct:.2f}")
+    elif bb_pct < 0.2:
+        score += 10; reasons.append(f"Near lower BB: {bb_pct:.2f}")
+
+    ret_1d = latest.get("return_1d", 0)
+    if ret_1d > 0.02:
+        score += 15; reasons.append(f"Strong rally: {ret_1d*100:.1f}%")
+    elif ret_1d > 0.005:
+        score += 8; reasons.append(f"Rising: {ret_1d*100:.1f}%")
+
+    vol = latest.get("volatility", 0)
+    if vol > 0.3:
+        score += 10; reasons.append(f"High volatility: {vol:.2f}")
+
+    close = latest.get("close", 0)
+    sma_5 = latest.get("sma_5", close)
+    sma_20 = latest.get("sma_20", close)
+    if close > sma_5 and close > sma_20:
+        score += 15; reasons.append("Above SMA5 and SMA20")
+    elif close > sma_5:
+        score += 8; reasons.append("Above SMA5")
+
+    ret_5d = latest.get("return_5d", 0)
+    if ret_5d > 0.03:
+        score += 10; reasons.append(f"5-day rally: {ret_5d*100:.1f}%")
+
+    score = min(score, 100)
+
+    if score >= 60:
+        action = "STRONG BUY"
+    elif score >= 40:
+        action = "BUY"
+    elif score >= 25:
+        action = "WEAK BUY"
+    else:
+        action = "HOLD"
+
+    return {
+        "symbol": symbol, "score": round(score, 1), "action": action,
+        "direction": "BUY", "reasons": reasons,
         "price": round(float(close), 2),
         "rsi": round(float(rsi), 1),
         "macd_hist": round(float(macd_hist), 4),
@@ -166,10 +224,14 @@ async def scan_fno_symbols(
     symbols: List[str] | None = None,
     top_n: int = 10,
     use_live_data: bool = False,
+    scan_type: str = "sell",  # "sell", "buy", or "both"
 ) -> List[Dict[str, Any]]:
-    """Scan F&O symbols and return top short-sell candidates.
+    """Scan F&O symbols and return top trading candidates.
 
-    In paper mode, uses synthetic data. In live mode, fetches from Kite.
+    scan_type:
+        "sell" — intraday short-sell candidates
+        "buy" — BTST long candidates
+        "both" — all signals sorted by score
     """
     symbols = symbols or FNO_SYMBOLS
     results = []
@@ -186,13 +248,17 @@ async def scan_fno_symbols(
             if featured.empty:
                 continue
 
-            result = score_for_short(featured, symbol)
-            results.append(result)
+            if scan_type in ("sell", "both"):
+                sell_result = score_for_short(featured, symbol)
+                results.append(sell_result)
+
+            if scan_type in ("buy", "both"):
+                buy_result = score_for_buy(featured, symbol)
+                results.append(buy_result)
 
         except Exception as exc:
             logger.warning("Failed to scan %s: %s", symbol, exc)
             continue
 
-    # Sort by score descending
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:top_n]
