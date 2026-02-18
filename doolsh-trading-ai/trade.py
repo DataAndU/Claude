@@ -377,12 +377,35 @@ def show_risk_config():
 
 def try_connect_kite():
     header("KITE CONNECTION")
-    print(f"  {DIM}Attempting auto-login to Zerodha Kite...{N}")
+    from app.core.config import get_settings
+    s = get_settings()
+    row("Kite User", s.kite_user_id or "Not set")
+    row("API Key", (s.kite_api_key[:6] + "***") if s.kite_api_key else "Not set")
+    row("TOTP Key", "Configured" if s.kite_totp_secret else "Not set", G if s.kite_totp_secret else R)
+    print()
+
+    if not all([s.kite_user_id, s.kite_password, s.kite_totp_secret, s.kite_api_key]):
+        print(f"  {R}Missing Kite credentials in .env file.{N}")
+        print(f"  {DIM}Set KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET, KITE_API_KEY{N}")
+        return
+
+    print(f"  {C}Step 1:{N} Sending login credentials...")
+    print(f"  {C}Step 2:{N} Submitting TOTP...")
+    print(f"  {C}Step 3:{N} Extracting request token...")
+    print(f"  {C}Step 4:{N} Generating session...")
+    print()
     status = asyncio.get_event_loop().run_until_complete(try_kite_login())
     if status == "CONNECTED":
         print(f"  {G}Connected to Kite successfully!{N}")
+        print(f"  {G}You can now trade in LIVE mode.{N}")
     else:
         print(f"  {Y}{status}{N}")
+        print()
+        print(f"  {DIM}Possible causes:{N}")
+        print(f"  {DIM}  - Invalid credentials or TOTP key{N}")
+        print(f"  {DIM}  - Kite API might be down or rate-limited{N}")
+        print(f"  {DIM}  - Network connectivity issue{N}")
+        print()
         print(f"  {DIM}Paper mode still works without Kite connection.{N}")
 
 

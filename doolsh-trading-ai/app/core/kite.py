@@ -45,10 +45,10 @@ async def auto_login() -> str:
     """Fully automated login via TOTP — no browser needed.
 
     Flow:
-        1. POST to Kite login endpoint with user_id + password
-        2. POST TOTP to the 2FA endpoint
-        3. Extract request_token from redirect
-        4. Exchange for access_token via Kite API
+        1. POST to Kite login with user_id + password → get request_id
+        2. POST TOTP to 2FA endpoint → get session cookies
+        3. GET Kite Connect login URL with session cookies → redirect with request_token
+        4. Exchange request_token for access_token
 
     Returns the access_token string.
     """
@@ -57,28 +57,41 @@ async def auto_login() -> str:
             "Auto-login requires KITE_USER_ID, KITE_PASSWORD, and KITE_TOTP_SECRET in .env"
         )
 
+    import urllib.parse
+
     kite = get_kite()
     login_url = "https://kite.zerodha.com/api/login"
     twofa_url = "https://kite.zerodha.com/api/twofa"
+    connect_url = f"https://kite.trade/connect/login?v=3&api_key={settings.kite_api_key}"
 
     totp = pyotp.TOTP(settings.kite_totp_secret)
+    request_token = ""
 
-    async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
-        # Step 1: Login with user_id + password
-        resp = await client.post(
+    # Use a cookie jar that sends cookies cross-domain (kite.zerodha.com → kite.trade)
+    async with httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=30,
+        headers={"User-Agent": "Mozilla/5.0"},
+    ) as client:
+        # ── Step 1: Login with user_id + password ──
+        logger.info("Kite auto-login step 1: credentials...")
+        resp1 = await client.post(
             login_url,
             data={
                 "user_id": settings.kite_user_id,
                 "password": settings.kite_password,
             },
         )
-        resp.raise_for_status()
-        login_data = resp.json().get("data", {})
+        resp1.raise_for_status()
+        login_data = resp1.json().get("data", {})
         request_id = login_data.get("request_id", "")
         if not request_id:
-            raise RuntimeError(f"Login step 1 failed: {resp.text}")
+            raise RuntimeError(f"Login step 1 failed — no request_id: {resp1.text}")
 
-        # Step 2: Submit TOTP
+        logger.info("Kite auto-login step 1 OK (request_id=%s)", request_id[:8])
+
+        # ── Step 2: Submit TOTP ──
+        logger.info("Kite auto-login step 2: TOTP...")
         resp2 = await client.post(
             twofa_url,
             data={
@@ -90,33 +103,65 @@ async def auto_login() -> str:
         )
         resp2.raise_for_status()
 
-        # Step 3: Kite redirects to redirect_url?request_token=...&action=login
-        # We follow the redirect manually from login URL
-        redirect_url = f"https://kite.trade/connect/login?v=3&api_key={settings.kite_api_key}"
-        resp3 = await client.get(redirect_url)
-        # The final redirect URL contains the request_token
-        if resp3.status_code in (301, 302, 303, 307, 308):
-            location = resp3.headers.get("location", "")
-        else:
-            # Sometimes the token is in the URL directly
-            location = str(resp3.url)
+        # Check if twofa response directly contains request_token
+        twofa_data = resp2.json().get("data", {})
+        request_token = twofa_data.get("request_token", "")
+        logger.info("Kite auto-login step 2 OK")
 
-        # Extract request_token from redirect URL
-        import urllib.parse
-        parsed = urllib.parse.urlparse(location)
-        params = urllib.parse.parse_qs(parsed.query)
-        request_token = params.get("request_token", [""])[0]
-
+        # ── Step 3: Get request_token from Kite Connect redirect ──
         if not request_token:
-            # Fallback: try from the 2FA response itself
-            twofa_data = resp2.json().get("data", {})
-            request_token = twofa_data.get("request_token", "")
+            logger.info("Kite auto-login step 3: extracting request_token...")
+
+            # Collect all cookies from login + twofa responses and pass to kite.trade
+            # Cookies are on kite.zerodha.com domain; we must forward them manually
+            all_cookies = {}
+            for r in (resp1, resp2):
+                for name, value in r.cookies.items():
+                    all_cookies[name] = value
+
+            resp3 = await client.get(connect_url, cookies=all_cookies)
+            location = ""
+
+            if resp3.status_code in (301, 302, 303, 307, 308):
+                location = resp3.headers.get("location", "")
+            else:
+                location = str(resp3.url)
+
+            # Follow up to 5 redirects manually, forwarding cookies
+            for _ in range(5):
+                if not location or "request_token" in location:
+                    break
+                # Merge any new cookies
+                for name, value in resp3.cookies.items():
+                    all_cookies[name] = value
+                resp3 = await client.get(location, cookies=all_cookies)
+                if resp3.status_code in (301, 302, 303, 307, 308):
+                    location = resp3.headers.get("location", "")
+                else:
+                    location = str(resp3.url)
+
+            # Parse request_token from the final redirect URL
+            if location:
+                parsed = urllib.parse.urlparse(location)
+                params = urllib.parse.parse_qs(parsed.query)
+                request_token = params.get("request_token", [""])[0]
+
+            # Fallback: check response body for request_token
+            if not request_token and resp3.status_code == 200:
+                body = resp3.text
+                if "request_token" in body:
+                    import re
+                    m = re.search(r'request_token["\s:=]+([a-zA-Z0-9]+)', body)
+                    if m:
+                        request_token = m.group(1)
 
         if not request_token:
             raise RuntimeError(
                 "Could not extract request_token from Kite login flow. "
-                "Try manual login via /api/v1/kite/login-url"
+                "Check credentials or try manual login via /api/v1/kite/login-url"
             )
+
+        logger.info("Kite auto-login: got request_token=%s...", request_token[:8])
 
     return await set_request_token(request_token)
 
